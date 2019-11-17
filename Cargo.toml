@@ -1,0 +1,30 @@
+[package]
+name = "reactrix"
+version = "0.1.0"
+authors = ["Alexander Kahl <ak@sodosopa.io>"]
+edition = "2018"
+
+[dependencies]
+reactrix-derive = { path = "../reactrix-derive" }
+rocket = "0.4.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.41"
+chrono = "0.4.9"
+dotenv = "0.14.1"
+redis = "0.13.0"
+failure = "0.1.6"
+structopt = "0.2.18"
+
+# rocket-slog = "0.4"
+# slog-gelf = "0.1.2"
+# slog-async = "2.3.0"
+# slog = "2.5.2"
+
+[dependencies.rocket_contrib]
+version = "0.4.2"
+default-features = false
+features = ["diesel_postgres_pool", "json"]
+
+[dependencies.diesel]
+version = "1.4.3"
+features = ["serde_json", "chrono", "postgres"]

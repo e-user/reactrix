@@ -1,0 +1,31 @@
+version: '3.7'
+
+services:
+  db:
+    image: postgres:11.5
+    environment:
+      POSTGRES_DB: events
+      POSTGRES_PASSWORD: events
+      POSTGRES_USER: events
+    networks:
+      adminer:
+        aliases: [events]
+      default:
+    ports:
+      - 5432:5432
+    volumes:
+      - db:/var/lib/postgresql/data:rw
+
+  redis:
+    image: redis:5.0.6
+    ports:
+      - 6379:6379
+
+networks:
+  adminer:
+    external: true
+  public:
+    external: true
+
+volumes:
+  db:

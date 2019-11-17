@@ -1,0 +1,34 @@
+version: '3.7'
+
+services:
+  # app:
+  #   networks: [default, public]
+  #   environment:
+  #     DATABASE_URL: postgres://events:events@db/events
+  #     REDIS_URL: redis://redis/
+  #     ROCKET_ENV: production
+
+  db:
+    image: postgres:11.5
+    networks:
+      default:
+      adminer:
+        aliases: [events]
+    volumes:
+      - db:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: events
+      POSTGRES_PASSWORD: events
+      POSTGRES_DB: events
+
+  redis:
+    image: redis:5.0.6
+
+volumes:
+  db:
+
+networks:
+  public:
+    external: true
+  adminer:
+    external: true

@@ -1,0 +1,20 @@
+version: '3.7'
+
+services:
+  # app:
+  #   build:
+  #     context: .
+  #   restart: unless-stopped
+  #   labels:
+  #     traefik.enable: "true"
+  #     traefik.frontend.rule: Host:events.docker.localhost
+  #     traefik.docker.network: public
+  #     traefik.port: 8000
+  #   volumes:
+  #     - ./Rocket.toml:/app/Rocket.toml:ro,z
+
+  db:
+    restart: unless-stopped
+
+  redis:
+    restart: unless-stopped
