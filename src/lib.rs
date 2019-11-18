@@ -19,6 +19,7 @@
 #[macro_use]
 extern crate diesel;
 
+pub mod keystore;
 pub mod models;
 pub mod schema;
 mod server;

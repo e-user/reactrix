@@ -34,3 +34,10 @@ pub struct NewEvent {
     pub type_: String,
     pub data: Value,
 }
+
+#[derive(Queryable, Insertable)]
+#[table_name = "keystore"]
+pub struct Key {
+    pub hash: Vec<u8>,
+    pub key: Vec<u8>,
+}

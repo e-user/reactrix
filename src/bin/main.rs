@@ -16,9 +16,12 @@
 
 #![feature(proc_macro_hygiene, decl_macro, try_trait)]
 
+use base64;
 use diesel::prelude::*;
 use diesel::result::DatabaseErrorKind;
 use diesel::result::Error as DieselError;
+use hex;
+use reactrix::keystore::{KeyStore, KeyStoreError};
 use reactrix::{models, schema};
 use redis;
 use redis::Commands;
@@ -26,7 +29,7 @@ use rocket::fairing;
 use rocket::fairing::Fairing;
 use rocket::http::Status;
 use rocket::response::Responder;
-use rocket::{catch, catchers, post, routes, Request, Response, Rocket, State};
+use rocket::{catch, catchers, delete, get, post, routes, Request, Response, Rocket, State};
 use rocket_contrib::database;
 use rocket_contrib::databases::diesel::PgConnection;
 use rocket_contrib::json;
@@ -88,6 +91,19 @@ impl<'r> Responder<'r> for StoreResponder {
     }
 }
 
+impl<'a> From<JsonError<'a>> for StoreResponder {
+    fn from(error: JsonError) -> Self {
+        match error {
+            JsonError::Io(error) => {
+                StoreResponder::error(Status::BadRequest, &format!("{:?}", error))
+            }
+            JsonError::Parse(_, error) => {
+                StoreResponder::error(Status::BadRequest, &format!("{:?}", error))
+            }
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 struct Event {
     version: i32,
@@ -105,6 +121,12 @@ impl From<Event> for models::NewEvent {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+struct Data {
+    nonce: String,
+    data: String,
+}
+
 #[database("events")]
 struct StoreDbConn(PgConnection);
 
@@ -112,6 +134,24 @@ fn notify(redis: State<redis::Client>, sequence: i64) -> Result<()> {
     let mut redis = redis.get_connection()?;
     let _: () = redis.publish("sequence", sequence)?;
     Ok(())
+}
+
+fn hex_decode(name: &str, data: &[u8]) -> result::Result<Vec<u8>, StoreResponder> {
+    hex::decode(data).or_else(|e| {
+        Err(StoreResponder::error(
+            Status::BadRequest,
+            &format!("Couldn't decode {}: {}", name, e),
+        ))
+    })
+}
+
+fn base64_decode(name: &str, data: &[u8]) -> result::Result<Vec<u8>, StoreResponder> {
+    base64::decode(data).or_else(|e| {
+        Err(StoreResponder::error(
+            Status::BadRequest,
+            &format!("Couldn't decode {}: {}", name, e),
+        ))
+    })
 }
 
 #[post("/v1/create", format = "application/json", data = "<event>")]
@@ -122,12 +162,7 @@ fn create(
 ) -> StoreResponder {
     let event = match event {
         Ok(event) => event.into_inner(),
-        Err(JsonError::Io(error)) => {
-            return StoreResponder::error(Status::BadRequest, &format!("{:?}", error))
-        }
-        Err(JsonError::Parse(_, error)) => {
-            return StoreResponder::error(Status::BadRequest, &format!("{:?}", error))
-        }
+        Err(e) => return e.into(),
     };
 
     let result = diesel::insert_into(schema::events::table)
@@ -146,6 +181,113 @@ fn create(
             StoreResponder::error(Status::BadRequest, &"Out of Sequence")
         }
         Err(e) => StoreResponder::error(Status::InternalServerError, &format!("{:?}", e)),
+    }
+}
+
+#[get("/v1/generate-key")]
+fn generate_key(conn: StoreDbConn) -> StoreResponder {
+    let store = KeyStore::new(&conn.0);
+    match store.generate_key() {
+        Ok(key) => StoreResponder::ok(Status::Created, Some(&hex::encode(key))),
+        Err(e) => StoreResponder::error(
+            Status::InternalServerError,
+            &format!("Couldn't generate key: {}", e),
+        ),
+    }
+}
+
+#[get("/v1/generate-nonce")]
+fn generate_nonce() -> StoreResponder {
+    StoreResponder::ok(
+        Status::Ok,
+        Some(&base64::encode(&KeyStore::generate_nonce())),
+    )
+}
+
+#[delete("/v1/delete-key/<id>")]
+fn delete_key(conn: StoreDbConn, id: String) -> StoreResponder {
+    let store = KeyStore::new(&conn.0);
+    let id = match hex_decode("id", id.as_bytes()) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+
+    match store.delete_key(&id) {
+        Ok(_) | Err(KeyStoreError::NoKey) => StoreResponder::ok::<()>(Status::Ok, None),
+        Err(e) => StoreResponder::error(
+            Status::InternalServerError,
+            &format!("Couldn't delete key: {}", e),
+        ),
+    }
+}
+
+#[post("/v1/encrypt/<id>", format = "application/json", data = "<data>")]
+fn encrypt(
+    conn: StoreDbConn,
+    id: String,
+    data: result::Result<Json<Data>, JsonError>,
+) -> StoreResponder {
+    let store = KeyStore::new(&conn.0);
+    let id = match hex_decode("id", id.as_bytes()) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+    let data = match data {
+        Ok(data) => data.into_inner(),
+        Err(e) => return e.into(),
+    };
+    let nonce = match base64_decode("nonce", data.nonce.as_bytes()) {
+        Ok(nonce) => nonce,
+        Err(e) => return e,
+    };
+
+    match store.encrypt(&id, &nonce, &data.data.as_bytes()) {
+        Ok(data) => StoreResponder::ok(Status::Ok, Some(&base64::encode(&data))),
+        Err(KeyStoreError::NoKey) => StoreResponder::error(Status::NotFound, "No such key"),
+        Err(e) => StoreResponder::error(
+            Status::InternalServerError,
+            &format!("Couldn't encrypt data: {}", e),
+        ),
+    }
+}
+
+#[post("/v1/decrypt/<id>", format = "application/json", data = "<data>")]
+fn decrypt(
+    conn: StoreDbConn,
+    id: String,
+    data: result::Result<Json<Data>, JsonError>,
+) -> StoreResponder {
+    let store = KeyStore::new(&conn.0);
+    let id = match hex_decode("id", id.as_bytes()) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+    let data = match data {
+        Ok(data) => data.into_inner(),
+        Err(e) => return e.into(),
+    };
+    let nonce = match base64_decode("nonce", data.nonce.as_bytes()) {
+        Ok(nonce) => nonce,
+        Err(e) => return e,
+    };
+    let data = match base64_decode("data", data.data.as_bytes()) {
+        Ok(data) => data,
+        Err(e) => return e,
+    };
+
+    match store.decrypt(&id, &nonce, &data) {
+        Ok(data) => match String::from_utf8(data) {
+            Ok(data) => StoreResponder::ok(Status::Ok, Some(&data)),
+            Err(_) => StoreResponder::error(
+                Status::InternalServerError,
+                "Could not encode decoded data to UTF-8",
+            ),
+        },
+        Err(KeyStoreError::NoKey) => StoreResponder::error(Status::NotFound, "No such key"),
+        Err(e) => StoreResponder::error(
+            Status::InternalServerError,
+            &format!("Couldn't decrypt data: {}", e),
+        ),
     }
 }
 
@@ -197,7 +339,17 @@ fn main() {
     rocket::ignite()
         .attach(StoreDbConn::fairing())
         .attach(Redis)
-        .mount("/", routes![create])
+        .mount(
+            "/",
+            routes![
+                create,
+                generate_key,
+                generate_nonce,
+                delete_key,
+                encrypt,
+                decrypt
+            ],
+        )
         .register(catchers![not_found, internal_server_error])
         .launch();
 }
