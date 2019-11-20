@@ -160,7 +160,7 @@ struct StoreDbConn(PgConnection);
 
 fn notify(redis: State<redis::Client>, sequence: i64) -> Result<()> {
     let mut redis = redis.get_connection()?;
-    let _: () = redis.publish("sequence", sequence)?;
+    redis.publish("sequence", sequence)?;
     Ok(())
 }
 

@@ -148,37 +148,30 @@ pub struct Encrypted {
 }
 
 fn process_event<A: Aggregatrix>(
+    sequence: i64,
     state: &StateLock<A::State>,
-    sequence: &mut i64,
     tx: &TxStore,
     pg: &PgConnection,
-    id: i64,
 ) -> Result<()> {
     use schema::events::dsl;
 
     let event = dsl::events
-        .filter(dsl::sequence.eq(id))
+        .filter(dsl::sequence.eq(sequence))
         .first::<Event>(pg)?;
 
-    if id != *sequence + 1 {
-        return Err(AggregatrixError::OutOfSequence(OutOfSequenceError(id)));
-    }
-
-    println!("Processing event {}", id);
-
-    *sequence += 1;
+    println!("Processing event {}", sequence);
 
     match A::dispatch(state, &event) {
         Ok(result) => {
             tx.send(TxStoreEvent::Store(
-                id,
+                sequence,
                 json!({ "type": "ok", "data": result }),
             ))?;
         }
         Err(e) => {
             println!("Event error: {}", e);
             tx.send(TxStoreEvent::Store(
-                id,
+                sequence,
                 json!({ "type": "error", "reason": e}),
             ))?;
         }
@@ -198,19 +191,17 @@ fn init<A: Aggregatrix>(tx: &TxStore, pg: &PgConnection) -> Result<(StateLock<A:
     {
         Ok(id) => id,
         Err(DieselError::NotFound) => 0,
-        Err(e) => Err(e)?,
+        Err(e) => return Err(e.into()),
     };
 
     let state = A::State::default();
     let lock = Arc::new(RwLock::new(state));
 
-    let mut sequence: i64 = 0;
-
-    for id in 1..max + 1 {
-        process_event::<A>(&lock, &mut sequence, tx, pg, id)?;
+    for id in 1..=max {
+        process_event::<A>(id, &lock, tx, pg)?;
     }
 
-    Ok((lock, sequence))
+    Ok((lock, max))
 }
 
 pub enum TxStoreEvent {
@@ -267,9 +258,13 @@ pub fn ignite<A: Aggregatrix>() -> Result<Rocket> {
     thread::spawn(move || {
         redis
             .subscribe("sequence", |msg| match msg.get_payload::<i64>() {
-                Ok(sequence_) => {
-                    for id in sequence..sequence_ {
-                        match process_event::<A>(&lock, &mut sequence, &tx_store, &pg, id + 1) {
+                Ok(id) => {
+                    if id <= sequence {
+                        return ControlFlow::Continue;
+                    }
+
+                    for id in sequence + 1..=id {
+                        match process_event::<A>(id, &lock, &tx_store, &pg) {
                             Ok(()) => {
                                 println!("{:?}", lock.read());
                             }
@@ -279,6 +274,9 @@ pub fn ignite<A: Aggregatrix>() -> Result<Rocket> {
                             }
                         }
                     }
+
+                    sequence = id;
+
                     ControlFlow::Continue
                 }
                 Err(e) => {
