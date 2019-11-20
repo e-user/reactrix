@@ -14,7 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{ApiResult, RxStore, RxStoreEvent, TxStore, TxStoreEvent};
+use super::{ApiResult, RxStore, RxStoreEvent, StateLock, TxStore, TxStoreEvent};
 use rocket::http::Status;
 use rocket::response::Responder;
 use rocket::{catch, catchers, get, routes, Request, Response, Rocket, State};
@@ -23,18 +23,20 @@ use rocket_contrib::json::JsonValue;
 use serde::Serialize;
 use std::sync::Mutex;
 
+pub type ServerState<'r, T> = State<'r, StateLock<T>>;
+
 #[derive(Debug)]
-struct ProcessResponder(Status, JsonValue);
+pub struct ProcessResponder(Status, JsonValue);
 
 impl ProcessResponder {
-    fn ok<T: Serialize>(status: Status, data: Option<&T>) -> Self {
+    pub fn ok<T: Serialize>(status: Status, data: Option<&T>) -> Self {
         match data {
             None => ProcessResponder(status, json!(ApiResult::<()>::Ok { data: None })),
             Some(data) => ProcessResponder(status, json!(ApiResult::Ok { data: Some(data) })),
         }
     }
 
-    fn error(status: Status, reason: &str) -> Self {
+    pub fn error(status: Status, reason: &str) -> Self {
         ProcessResponder(
             status,
             json!(ApiResult::<()>::Error {
@@ -52,9 +54,9 @@ impl<'r> Responder<'r> for ProcessResponder {
     }
 }
 
-#[get("/retrieve/<id>")]
+#[get("/v1/retrieve/<id>")]
 fn retrieve(id: i64, state: State<Mutex<(TxStore, RxStore)>>) -> ProcessResponder {
-    match state.inner().lock() {
+    match state.lock() {
         Ok(guard) => {
             let (tx, rx) = &*guard;
 
@@ -88,9 +90,13 @@ fn not_found() -> ProcessResponder {
     ProcessResponder::error(Status::NotFound, &"No such resource")
 }
 
-pub fn ignite(tx: TxStore, rx: RxStore) -> Rocket {
+pub fn ignite<T>(tx: TxStore, rx: RxStore, state: StateLock<T>) -> Rocket
+where
+    T: Send + Sync + 'static,
+{
     rocket::ignite()
         .manage(Mutex::new((tx, rx)))
+        .manage(state)
         .mount("/", routes![retrieve])
         .register(catchers![not_found])
 }

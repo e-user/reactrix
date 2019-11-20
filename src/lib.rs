@@ -35,7 +35,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::env;
 use std::fmt::{Debug, Display};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, RwLock};
 use std::thread;
 
 pub use models::Event;
@@ -44,6 +44,7 @@ pub use rocket;
 pub use serde::Serialize;
 pub use serde_json::Error as JsonError;
 pub use serde_json::Value as JsonValue;
+pub use server::{ProcessResponder, ServerState};
 
 #[derive(Debug, Fail)]
 #[fail(display = "Out of Sequence: {}", 0)]
@@ -117,11 +118,16 @@ fn redis_client() -> Result<redis::Client> {
     Ok(redis::Client::open(&*redis_url()?)?)
 }
 
+pub type StateLock<T> = Arc<RwLock<T>>;
+
 pub trait Aggregatrix {
-    type State: Default + Debug + Send + 'static;
+    type State: Default + Debug + Send + Sync + 'static;
     type Error: Display + Serialize;
 
-    fn dispatch(state: &mut Self::State, event: &Event) -> std::result::Result<Value, Self::Error>;
+    fn dispatch(
+        state: &StateLock<Self::State>,
+        event: &Event,
+    ) -> std::result::Result<Value, Self::Error>;
 }
 
 type Results = HashMap<i64, Value>;
@@ -133,7 +139,7 @@ pub enum ApiResult<T> {
     Error { reason: String },
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct Encrypted {
     pub key_id: String,
@@ -142,7 +148,7 @@ pub struct Encrypted {
 }
 
 fn process_event<A: Aggregatrix>(
-    state: &mut A::State,
+    state: &StateLock<A::State>,
     sequence: &mut i64,
     tx: &TxStore,
     pg: &PgConnection,
@@ -181,7 +187,7 @@ fn process_event<A: Aggregatrix>(
     Ok(())
 }
 
-fn init<A: Aggregatrix>(tx: &TxStore, pg: &PgConnection) -> Result<(A::State, i64)> {
+fn init<A: Aggregatrix>(tx: &TxStore, pg: &PgConnection) -> Result<(StateLock<A::State>, i64)> {
     use schema::events::dsl;
 
     let max = match dsl::events
@@ -195,15 +201,16 @@ fn init<A: Aggregatrix>(tx: &TxStore, pg: &PgConnection) -> Result<(A::State, i6
         Err(e) => Err(e)?,
     };
 
-    let mut state = A::State::default();
+    let state = A::State::default();
+    let lock = Arc::new(RwLock::new(state));
 
     let mut sequence: i64 = 0;
 
     for id in 1..max + 1 {
-        process_event::<A>(&mut state, &mut sequence, tx, pg, id)?;
+        process_event::<A>(&lock, &mut sequence, tx, pg, id)?;
     }
 
-    Ok((state, sequence))
+    Ok((lock, sequence))
 }
 
 pub enum TxStoreEvent {
@@ -254,17 +261,17 @@ pub fn ignite<A: Aggregatrix>() -> Result<Rocket> {
         }
     });
 
-    let (mut state, mut sequence) = init::<A>(&tx_store, &pg)?;
+    let (lock, mut sequence) = init::<A>(&tx_store, &pg)?;
+    let server_lock = lock.clone();
 
     thread::spawn(move || {
         redis
             .subscribe("sequence", |msg| match msg.get_payload::<i64>() {
                 Ok(sequence_) => {
                     for id in sequence..sequence_ {
-                        match process_event::<A>(&mut state, &mut sequence, &tx_store, &pg, id + 1)
-                        {
+                        match process_event::<A>(&lock, &mut sequence, &tx_store, &pg, id + 1) {
                             Ok(()) => {
-                                println!("{:?}", state);
+                                println!("{:?}", lock.read());
                             }
                             Err(e) => {
                                 println!("{:?}", e);
@@ -282,5 +289,5 @@ pub fn ignite<A: Aggregatrix>() -> Result<Rocket> {
             .unwrap();
     });
 
-    Ok(server::ignite(tx_store_rocket, rx_server))
+    Ok(server::ignite(tx_store_rocket, rx_server, server_lock))
 }
