@@ -29,6 +29,8 @@ use diesel::prelude::*;
 use diesel::result::Error as DieselError;
 use failure::Fail;
 use redis::{ControlFlow, PubSubCommands};
+use rocket::Rocket;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::env;
@@ -38,6 +40,7 @@ use std::thread;
 
 pub use models::Event;
 pub use reactrix_derive::Event;
+pub use rocket;
 pub use serde::Serialize;
 pub use serde_json::Error as JsonError;
 pub use serde_json::Value as JsonValue;
@@ -123,6 +126,21 @@ pub trait Aggregatrix {
 
 type Results = HashMap<i64, Value>;
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "status", rename_all = "kebab-case")]
+pub enum ApiResult<T> {
+    Ok { data: Option<T> },
+    Error { reason: String },
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct Encrypted {
+    pub key_id: String,
+    pub nonce: String,
+    pub data: String,
+}
+
 fn process_event<A: Aggregatrix>(
     state: &mut A::State,
     sequence: &mut i64,
@@ -202,7 +220,7 @@ pub type TxStore = mpsc::Sender<TxStoreEvent>;
 pub type RxStore = mpsc::Receiver<RxStoreEvent>;
 type TxStoreError = mpsc::SendError<TxStoreEvent>;
 
-pub fn launch<A: Aggregatrix>() -> Result<()> {
+pub fn ignite<A: Aggregatrix>() -> Result<Rocket> {
     let pg = PgConnection::establish(&database_url()?)?;
     let mut redis = redis_client()?.get_connection()?;
     let (tx_store, rx_store) = mpsc::channel();
@@ -264,7 +282,5 @@ pub fn launch<A: Aggregatrix>() -> Result<()> {
             .unwrap();
     });
 
-    server::launch(tx_store_rocket, rx_server);
-
-    Ok(())
+    Ok(server::ignite(tx_store_rocket, rx_server))
 }

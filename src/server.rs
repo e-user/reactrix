@@ -14,11 +14,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{RxStore, RxStoreEvent, TxStore, TxStoreEvent};
-use rocket;
+use super::{ApiResult, RxStore, RxStoreEvent, TxStore, TxStoreEvent};
 use rocket::http::Status;
 use rocket::response::Responder;
-use rocket::{catch, catchers, get, routes, Request, Response, State};
+use rocket::{catch, catchers, get, routes, Request, Response, Rocket, State};
 use rocket_contrib::json;
 use rocket_contrib::json::JsonValue;
 use serde::Serialize;
@@ -30,13 +29,18 @@ struct ProcessResponder(Status, JsonValue);
 impl ProcessResponder {
     fn ok<T: Serialize>(status: Status, data: Option<&T>) -> Self {
         match data {
-            None => ProcessResponder(status, json!({ "status": "ok" })),
-            Some(d) => ProcessResponder(status, json!({ "status": "ok", "data": d })),
+            None => ProcessResponder(status, json!(ApiResult::<()>::Ok { data: None })),
+            Some(data) => ProcessResponder(status, json!(ApiResult::Ok { data: Some(data) })),
         }
     }
 
     fn error(status: Status, reason: &str) -> Self {
-        ProcessResponder(status, json!({ "status": "error", "reason": reason }))
+        ProcessResponder(
+            status,
+            json!(ApiResult::<()>::Error {
+                reason: reason.to_string(),
+            }),
+        )
     }
 }
 
@@ -84,10 +88,9 @@ fn not_found() -> ProcessResponder {
     ProcessResponder::error(Status::NotFound, &"No such resource")
 }
 
-pub fn launch(tx: TxStore, rx: RxStore) {
+pub fn ignite(tx: TxStore, rx: RxStore) -> Rocket {
     rocket::ignite()
         .manage(Mutex::new((tx, rx)))
         .mount("/", routes![retrieve])
         .register(catchers![not_found])
-        .launch();
 }

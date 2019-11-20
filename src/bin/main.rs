@@ -104,6 +104,12 @@ impl<'a> From<JsonError<'a>> for StoreResponder {
     }
 }
 
+impl From<serde_json::Error> for StoreResponder {
+    fn from(error: serde_json::Error) -> Self {
+        StoreResponder::error(Status::BadRequest, &format!("{:?}", error))
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 struct Event {
     version: i32,
@@ -122,9 +128,9 @@ impl From<Event> for models::NewEvent {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct Data {
-    nonce: String,
-    data: String,
+pub struct Encrypted<T> {
+    pub nonce: String,
+    pub data: T,
 }
 
 #[database("events")]
@@ -225,7 +231,7 @@ fn delete_key(conn: StoreDbConn, id: String) -> StoreResponder {
 fn encrypt(
     conn: StoreDbConn,
     id: String,
-    data: result::Result<Json<Data>, JsonError>,
+    data: result::Result<Json<Encrypted<Value>>, JsonError>,
 ) -> StoreResponder {
     let store = KeyStore::new(&conn.0);
     let id = match hex_decode("id", id.as_bytes()) {
@@ -240,8 +246,12 @@ fn encrypt(
         Ok(nonce) => nonce,
         Err(e) => return e,
     };
+    let data = match serde_json::to_string(&data.data) {
+        Ok(data) => data,
+        Err(e) => return e.into(),
+    };
 
-    match store.encrypt(&id, &nonce, &data.data.as_bytes()) {
+    match store.encrypt(&id, &nonce, &data.as_bytes()) {
         Ok(data) => StoreResponder::ok(Status::Ok, Some(&base64::encode(&data))),
         Err(KeyStoreError::NoKey) => StoreResponder::error(Status::NotFound, "No such key"),
         Err(e) => StoreResponder::error(
@@ -255,7 +265,7 @@ fn encrypt(
 fn decrypt(
     conn: StoreDbConn,
     id: String,
-    data: result::Result<Json<Data>, JsonError>,
+    data: result::Result<Json<Encrypted<String>>, JsonError>,
 ) -> StoreResponder {
     let store = KeyStore::new(&conn.0);
     let id = match hex_decode("id", id.as_bytes()) {
