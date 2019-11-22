@@ -21,6 +21,7 @@ extern crate diesel;
 
 pub mod keystore;
 pub mod models;
+mod results;
 pub mod schema;
 mod server;
 
@@ -29,13 +30,13 @@ use diesel::prelude::*;
 use diesel::result::Error as DieselError;
 use failure::Fail;
 use redis::{ControlFlow, PubSubCommands};
+use results::{Tx, TxError, TxEvent};
 use rocket::Rocket;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::env;
 use std::fmt::{Debug, Display};
-use std::sync::{mpsc, Arc, RwLock};
+use std::result;
 use std::thread;
 
 pub use models::Event;
@@ -44,7 +45,7 @@ pub use rocket;
 pub use serde::Serialize;
 pub use serde_json::Error as JsonError;
 pub use serde_json::Value as JsonValue;
-pub use server::{ProcessResponder, ServerState};
+pub use server::ProcessResponder;
 
 #[derive(Debug, Fail)]
 #[fail(display = "Out of Sequence: {}", 0)]
@@ -62,8 +63,8 @@ pub enum AggregatrixError {
     Database(DieselError),
     #[fail(display = "Event out of sequence: {}", 0)]
     OutOfSequence(OutOfSequenceError),
-    #[fail(display = "TxStore error: {}", 0)]
-    ResultProcessing(TxStoreError),
+    #[fail(display = "Tx error: {}", 0)]
+    ResultProcessing(TxError),
     #[fail(display = "Could not convert JSON: {}", 0)]
     JsonConversion(String),
 }
@@ -92,8 +93,8 @@ impl From<DieselError> for AggregatrixError {
     }
 }
 
-impl From<TxStoreError> for AggregatrixError {
-    fn from(error: TxStoreError) -> Self {
+impl From<TxError> for AggregatrixError {
+    fn from(error: TxError) -> Self {
         AggregatrixError::ResultProcessing(error)
     }
 }
@@ -118,19 +119,12 @@ fn redis_client() -> Result<redis::Client> {
     Ok(redis::Client::open(&*redis_url()?)?)
 }
 
-pub type StateLock<T> = Arc<RwLock<T>>;
-
 pub trait Aggregatrix {
-    type State: Default + Debug + Send + Sync + 'static;
+    type Context: Default + Clone + Send + Sync + 'static;
     type Error: Display + Serialize;
 
-    fn dispatch(
-        state: &StateLock<Self::State>,
-        event: &Event,
-    ) -> std::result::Result<Value, Self::Error>;
+    fn dispatch(context: &Self::Context, event: &Event) -> result::Result<Value, Self::Error>;
 }
-
-type Results = HashMap<i64, Value>;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "status", rename_all = "kebab-case")]
@@ -149,8 +143,8 @@ pub struct Encrypted {
 
 fn process_event<A: Aggregatrix>(
     sequence: i64,
-    state: &StateLock<A::State>,
-    tx: &TxStore,
+    context: &A::Context,
+    tx: &Tx,
     pg: &PgConnection,
 ) -> Result<()> {
     use schema::events::dsl;
@@ -161,16 +155,16 @@ fn process_event<A: Aggregatrix>(
 
     println!("Processing event {}", sequence);
 
-    match A::dispatch(state, &event) {
+    match A::dispatch(context, &event) {
         Ok(result) => {
-            tx.send(TxStoreEvent::Store(
+            tx.send(TxEvent::Store(
                 sequence,
                 json!({ "type": "ok", "data": result }),
             ))?;
         }
         Err(e) => {
-            println!("Event error: {}", e);
-            tx.send(TxStoreEvent::Store(
+            println!("Event {} error: {}", sequence, e);
+            tx.send(TxEvent::Store(
                 sequence,
                 json!({ "type": "error", "reason": e}),
             ))?;
@@ -180,7 +174,7 @@ fn process_event<A: Aggregatrix>(
     Ok(())
 }
 
-fn init<A: Aggregatrix>(tx: &TxStore, pg: &PgConnection) -> Result<(StateLock<A::State>, i64)> {
+fn init<A: Aggregatrix>(tx: &Tx, pg: &PgConnection) -> Result<(A::Context, i64)> {
     use schema::events::dsl;
 
     let max = match dsl::events
@@ -194,66 +188,24 @@ fn init<A: Aggregatrix>(tx: &TxStore, pg: &PgConnection) -> Result<(StateLock<A:
         Err(e) => return Err(e.into()),
     };
 
-    let state = A::State::default();
-    let lock = Arc::new(RwLock::new(state));
+    let context = A::Context::default();
 
     for id in 1..=max {
-        process_event::<A>(id, &lock, tx, pg)?;
+        process_event::<A>(id, &context, tx, pg)?;
     }
 
-    Ok((lock, max))
+    Ok((context, max))
 }
-
-pub enum TxStoreEvent {
-    Store(i64, Value),
-    Retrieve(i64),
-}
-
-pub enum RxStoreEvent {
-    Result(Value),
-    NoValue,
-}
-
-pub type TxStore = mpsc::Sender<TxStoreEvent>;
-pub type RxStore = mpsc::Receiver<RxStoreEvent>;
-type TxStoreError = mpsc::SendError<TxStoreEvent>;
 
 pub fn ignite<A: Aggregatrix>() -> Result<Rocket> {
     let pg = PgConnection::establish(&database_url()?)?;
     let mut redis = redis_client()?.get_connection()?;
-    let (tx_store, rx_store) = mpsc::channel();
-    let (tx_server, rx_server) = mpsc::channel();
-    let tx_store_rocket = tx_store.clone();
 
-    let mut results: Results = HashMap::new();
+    let (tx_results, rx_results) = results::launch();
+    let tx_results_rocket = tx_results.clone();
 
-    thread::spawn(move || {
-        for msg in rx_store {
-            match msg {
-                TxStoreEvent::Store(id, value) => {
-                    results.insert(id, value);
-                    println!("{:?}", results);
-                }
-                TxStoreEvent::Retrieve(id) => match results.get(&id) {
-                    Some(result) => {
-                        if let Err(e) = tx_server.send(RxStoreEvent::Result(result.clone())) {
-                            println!("{:?}", e);
-                            return;
-                        }
-                    }
-                    None => {
-                        if let Err(e) = tx_server.send(RxStoreEvent::NoValue) {
-                            println!("{:?}", e);
-                            return;
-                        }
-                    }
-                },
-            }
-        }
-    });
-
-    let (lock, mut sequence) = init::<A>(&tx_store, &pg)?;
-    let server_lock = lock.clone();
+    let (context, mut sequence) = init::<A>(&tx_results, &pg)?;
+    let server_context = context.clone();
 
     thread::spawn(move || {
         redis
@@ -264,15 +216,10 @@ pub fn ignite<A: Aggregatrix>() -> Result<Rocket> {
                     }
 
                     for id in sequence + 1..=id {
-                        match process_event::<A>(id, &lock, &tx_store, &pg) {
-                            Ok(()) => {
-                                println!("{:?}", lock.read());
-                            }
-                            Err(e) => {
-                                println!("{:?}", e);
-                                return ControlFlow::Break(e);
-                            }
-                        }
+                        if let Err(e) = process_event::<A>(id, &context, &tx_results, &pg) {
+                            println!("{:?}", e);
+                            return ControlFlow::Break(e);
+                        };
                     }
 
                     sequence = id;
@@ -287,5 +234,9 @@ pub fn ignite<A: Aggregatrix>() -> Result<Rocket> {
             .unwrap();
     });
 
-    Ok(server::ignite(tx_store_rocket, rx_server, server_lock))
+    Ok(server::ignite(
+        tx_results_rocket,
+        rx_results,
+        server_context,
+    ))
 }

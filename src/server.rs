@@ -14,7 +14,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{ApiResult, RxStore, RxStoreEvent, StateLock, TxStore, TxStoreEvent};
+use super::results::{Rx, RxEvent, Tx, TxEvent};
+use super::ApiResult;
 use rocket::http::Status;
 use rocket::response::Responder;
 use rocket::{catch, catchers, get, routes, Request, Response, Rocket, State};
@@ -22,8 +23,6 @@ use rocket_contrib::json;
 use rocket_contrib::json::JsonValue;
 use serde::Serialize;
 use std::sync::Mutex;
-
-pub type ServerState<'r, T> = State<'r, StateLock<T>>;
 
 #[derive(Debug)]
 pub struct ProcessResponder(Status, JsonValue);
@@ -55,12 +54,12 @@ impl<'r> Responder<'r> for ProcessResponder {
 }
 
 #[get("/v1/retrieve/<id>")]
-fn retrieve(id: i64, state: State<Mutex<(TxStore, RxStore)>>) -> ProcessResponder {
+fn retrieve(id: i64, state: State<Mutex<(Tx, Rx)>>) -> ProcessResponder {
     match state.lock() {
         Ok(guard) => {
             let (tx, rx) = &*guard;
 
-            if let Err(e) = tx.send(TxStoreEvent::Retrieve(id)) {
+            if let Err(e) = tx.send(TxEvent::Retrieve(id)) {
                 return ProcessResponder::error(
                     Status::InternalServerError,
                     &format!("Result tx channel died: {:?}", e),
@@ -68,8 +67,8 @@ fn retrieve(id: i64, state: State<Mutex<(TxStore, RxStore)>>) -> ProcessResponde
             }
 
             match rx.recv() {
-                Ok(RxStoreEvent::Result(data)) => ProcessResponder::ok(Status::Ok, Some(&data)),
-                Ok(RxStoreEvent::NoValue) => {
+                Ok(RxEvent::Result(data)) => ProcessResponder::ok(Status::Ok, Some(&data)),
+                Ok(RxEvent::NoValue) => {
                     ProcessResponder::error(Status::BadRequest, "No result with id")
                 }
                 Err(e) => ProcessResponder::error(
@@ -90,13 +89,13 @@ fn not_found() -> ProcessResponder {
     ProcessResponder::error(Status::NotFound, &"No such resource")
 }
 
-pub fn ignite<T>(tx: TxStore, rx: RxStore, state: StateLock<T>) -> Rocket
+pub fn ignite<T>(tx: Tx, rx: Rx, context: T) -> Rocket
 where
     T: Send + Sync + 'static,
 {
     rocket::ignite()
         .manage(Mutex::new((tx, rx)))
-        .manage(state)
+        .manage(context)
         .mount("/", routes![retrieve])
         .register(catchers![not_found])
 }
