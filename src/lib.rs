@@ -34,9 +34,11 @@ use results::{Tx, TxError, TxEvent};
 use rocket::Rocket;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::LinkedList;
 use std::env;
 use std::fmt::{Debug, Display};
 use std::result;
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
 pub use models::Event;
@@ -197,9 +199,34 @@ fn init<A: Aggregatrix>(tx: &Tx, pg: &PgConnection) -> Result<(A::Context, i64)>
     Ok((context, max))
 }
 
+pub fn redis_queue(queue: Arc<(Mutex<LinkedList<i64>>, Condvar)>) -> Result<()> {
+    let mut redis = redis_client()?.get_connection()?;
+    thread::spawn(move || {
+        let (queue, condvar) = &*queue;
+        redis.subscribe("sequence", |msg| match msg.get_payload::<i64>() {
+            Ok(id) => match queue.lock() {
+                Ok(mut queue) => {
+                    queue.push_back(id);
+                    condvar.notify_one();
+                    ControlFlow::Continue
+                }
+                Err(e) => ControlFlow::Break(format!("Couldn't lock mutex: {}", e)),
+            },
+            Err(e) => {
+                println!("{:?}", e);
+                ControlFlow::Continue
+            }
+        })
+    });
+
+    Ok(())
+}
+
 pub fn ignite<A: Aggregatrix>() -> Result<Rocket> {
     let pg = PgConnection::establish(&database_url()?)?;
-    let mut redis = redis_client()?.get_connection()?;
+
+    let queue = Arc::new((Mutex::new(LinkedList::<i64>::new()), Condvar::new()));
+    redis_queue(queue.clone())?;
 
     let (tx_results, rx_results) = results::launch();
     let tx_results_rocket = tx_results.clone();
@@ -208,30 +235,24 @@ pub fn ignite<A: Aggregatrix>() -> Result<Rocket> {
     let server_context = context.clone();
 
     thread::spawn(move || {
-        redis
-            .subscribe("sequence", |msg| match msg.get_payload::<i64>() {
-                Ok(id) => {
-                    if id <= sequence {
-                        return ControlFlow::Continue;
-                    }
+        let (queue, condvar) = &*queue;
 
+        loop {
+            let mut queue = queue.lock().unwrap();
+            if queue.len() == 0 {
+                queue = condvar.wait(queue).unwrap();
+            }
+
+            if let Some(id) = queue.pop_front() {
+                drop(queue);
+                if id > sequence {
                     for id in sequence + 1..=id {
-                        if let Err(e) = process_event::<A>(id, &context, &tx_results, &pg) {
-                            println!("{:?}", e);
-                            return ControlFlow::Break(e);
-                        };
+                        process_event::<A>(id, &context, &tx_results, &pg).unwrap();
+                        sequence = id;
                     }
-
-                    sequence = id;
-
-                    ControlFlow::Continue
                 }
-                Err(e) => {
-                    println!("{:?}", e);
-                    ControlFlow::Continue
-                }
-            })
-            .unwrap();
+            }
+        }
     });
 
     Ok(server::ignite(
