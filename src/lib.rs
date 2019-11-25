@@ -29,6 +29,7 @@ use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::result::Error as DieselError;
 use failure::Fail;
+use juniper::{GraphQLObject, GraphQLType, RootNode};
 use redis::{ControlFlow, PubSubCommands};
 use results::{Tx, TxError, TxEvent};
 use rocket::Rocket;
@@ -124,8 +125,11 @@ fn redis_client() -> Result<redis::Client> {
 pub trait Aggregatrix {
     type Context: Default + Clone + Send + Sync + 'static;
     type Error: Display + Serialize;
+    type Query: GraphQLType<Context = Self::Context, TypeInfo = ()> + Send + Sync + Clone;
+    type Mutation: GraphQLType<Context = Self::Context, TypeInfo = ()> + Send + Sync + Clone;
 
     fn dispatch(context: &Self::Context, event: &Event) -> result::Result<Value, Self::Error>;
+    fn schema() -> RootNode<'static, Self::Query, Self::Mutation>;
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -135,7 +139,7 @@ pub enum ApiResult<T> {
     Error { reason: String },
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, GraphQLObject)]
 #[serde(rename_all = "kebab-case")]
 pub struct Encrypted {
     pub key_id: String,
@@ -222,7 +226,7 @@ pub fn redis_queue(queue: Arc<(Mutex<LinkedList<i64>>, Condvar)>) -> Result<()> 
     Ok(())
 }
 
-pub fn ignite<A: Aggregatrix>() -> Result<Rocket> {
+pub fn ignite<A: 'static + Aggregatrix + Clone>() -> Result<Rocket> {
     let pg = PgConnection::establish(&database_url()?)?;
 
     let queue = Arc::new((Mutex::new(LinkedList::<i64>::new()), Condvar::new()));
@@ -255,7 +259,7 @@ pub fn ignite<A: Aggregatrix>() -> Result<Rocket> {
         }
     });
 
-    Ok(server::ignite(
+    Ok(server::ignite::<A>(
         tx_results_rocket,
         rx_results,
         server_context,
