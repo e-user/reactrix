@@ -52,8 +52,8 @@ pub fn generate_key() -> Result<String> {
         .json::<ApiResult<String>>()?
     {
         ApiResult::Ok { data: Some(data) } => Ok(data),
-        ApiResult::Ok { data: None } => return Err(ApiError("Empty reponse".to_string())),
-        ApiResult::Error { reason } => return Err(ApiError(reason)),
+        ApiResult::Ok { data: None } => Err(ApiError("Empty reponse".to_string())),
+        ApiResult::Error { reason } => Err(ApiError(reason)),
     }
 }
 
@@ -66,8 +66,8 @@ pub fn generate_nonce() -> Result<String> {
         .json::<ApiResult<String>>()?
     {
         ApiResult::Ok { data: Some(data) } => Ok(data),
-        ApiResult::Ok { data: None } => return Err(ApiError("Empty reponse".to_string())),
-        ApiResult::Error { reason } => return Err(ApiError(reason)),
+        ApiResult::Ok { data: None } => Err(ApiError("Empty reponse".to_string())),
+        ApiResult::Error { reason } => Err(ApiError(reason)),
     }
 }
 
