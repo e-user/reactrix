@@ -19,6 +19,7 @@
 #[macro_use]
 extern crate diesel;
 
+mod api;
 pub mod keystore;
 pub mod models;
 mod results;
@@ -42,6 +43,7 @@ use std::result;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
+pub use api::*;
 pub use models::Event;
 pub use reactrix_derive::Event;
 pub use rocket;
@@ -155,11 +157,11 @@ fn process_event<A: Aggregatrix>(
 ) -> Result<()> {
     use schema::events::dsl;
 
+    println!("Processing event {}", sequence);
+
     let event = dsl::events
         .filter(dsl::sequence.eq(sequence))
         .first::<Event>(pg)?;
-
-    println!("Processing event {}", sequence);
 
     match A::dispatch(context, &event) {
         Ok(result) => {
@@ -203,7 +205,7 @@ fn init<A: Aggregatrix>(tx: &Tx, pg: &PgConnection) -> Result<(A::Context, i64)>
     Ok((context, max))
 }
 
-pub fn redis_queue(queue: Arc<(Mutex<LinkedList<i64>>, Condvar)>) -> Result<()> {
+fn redis_queue(queue: Arc<(Mutex<LinkedList<i64>>, Condvar)>) -> Result<()> {
     let mut redis = redis_client()?.get_connection()?;
     thread::spawn(move || {
         let (queue, condvar) = &*queue;

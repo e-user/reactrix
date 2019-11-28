@@ -20,6 +20,7 @@ hex = "0.4.0"
 base64 = "0.11.0"
 juniper = "0.14.1"
 juniper_rocket = "0.5.1"
+reqwest = "0.9.22"
 
 [dependencies.rocket_contrib]
 version = "0.4.2"
