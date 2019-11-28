@@ -135,7 +135,6 @@ impl From<serde_json::Error> for StoreResponder {
 #[derive(Serialize, Deserialize, Debug)]
 struct Event {
     version: i32,
-    r#type: String,
     data: Map<String, Value>,
 }
 
@@ -143,7 +142,6 @@ impl From<Event> for models::NewEvent {
     fn from(event: Event) -> Self {
         Self {
             version: event.version,
-            type_: event.r#type,
             data: event.data.into(),
         }
     }

@@ -16,22 +16,21 @@
 
 use crate::schema::*;
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 use serde_json::Value;
 
 #[derive(Queryable)]
 pub struct Event {
     pub sequence: i64,
     pub version: i32,
-    pub type_: String,
     pub data: Value,
     pub timestamp: DateTime<Utc>,
 }
 
-#[derive(Insertable)]
+#[derive(Insertable, Serialize)]
 #[table_name = "events"]
 pub struct NewEvent {
     pub version: i32,
-    pub type_: String,
     pub data: Value,
 }
 

@@ -2,7 +2,6 @@
 CREATE TABLE events (
   sequence bigserial PRIMARY KEY,
   version int NOT NULL,
-  type text NOT NULL,
   data jsonb NOT NULL,
   timestamp timestamptz NOT NULL default now()
 );

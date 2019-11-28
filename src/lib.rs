@@ -44,7 +44,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
 pub use api::*;
-pub use models::Event;
+pub use models::{Event, NewEvent};
 pub use reactrix_derive::Event;
 pub use rocket;
 pub use serde::Serialize;
