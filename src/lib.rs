@@ -45,7 +45,6 @@ use std::thread;
 
 pub use api::*;
 pub use models::{Event, NewEvent};
-pub use reactrix_derive::Event;
 pub use rocket;
 pub use serde::Serialize;
 pub use serde_json::Error as JsonError;
