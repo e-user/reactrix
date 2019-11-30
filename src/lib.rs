@@ -182,26 +182,20 @@ fn process_event<A: Aggregatrix>(
 }
 
 fn init<A: Aggregatrix>(tx: &Tx, pg: &PgConnection) -> Result<(A::Context, i64)> {
-    use schema::events::dsl;
+    use schema::events::dsl::*;
 
-    let max = match dsl::events
-        .select(dsl::sequence)
-        .order(dsl::sequence.desc())
-        .limit(1)
-        .first::<i64>(pg)
-    {
-        Ok(id) => id,
-        Err(DieselError::NotFound) => 0,
-        Err(e) => return Err(e.into()),
-    };
+    let ids = events
+        .select(sequence)
+        .order(sequence.asc())
+        .load::<i64>(pg)?;
 
     let context = A::Context::default();
 
-    for id in 1..=max {
-        process_event::<A>(id, &context, tx, pg)?;
+    for id in ids.iter() {
+        process_event::<A>(*id, &context, tx, pg)?;
     }
 
-    Ok((context, max))
+    Ok((context, *ids.last().unwrap_or(&0)))
 }
 
 fn redis_queue(queue: Arc<(Mutex<LinkedList<i64>>, Condvar)>) -> Result<()> {
@@ -251,10 +245,8 @@ pub fn ignite<A: 'static + Aggregatrix + Clone>() -> Result<Rocket> {
             if let Some(id) = queue.pop_front() {
                 drop(queue);
                 if id > sequence {
-                    for id in sequence + 1..=id {
-                        process_event::<A>(id, &context, &tx_results, &pg).unwrap();
-                        sequence = id;
-                    }
+                    process_event::<A>(id, &context, &tx_results, &pg).unwrap();
+                    sequence = id;
                 }
             }
         }
