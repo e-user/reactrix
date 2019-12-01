@@ -14,18 +14,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::ApiResult;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::mpsc;
 use std::thread;
 
 pub enum TxEvent {
-    Store(i64, Value),
+    Store(i64, ApiResult<Value>),
     Retrieve(i64),
 }
 
 pub enum RxEvent {
-    Result(Value),
+    Result(ApiResult<Value>),
     NoValue,
 }
 

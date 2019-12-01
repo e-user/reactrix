@@ -35,7 +35,7 @@ use redis::{ControlFlow, PubSubCommands};
 use results::{Tx, TxError, TxEvent};
 use rocket::Rocket;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::collections::LinkedList;
 use std::env;
 use std::fmt::{Debug, Display};
@@ -133,7 +133,7 @@ pub trait Aggregatrix {
     fn schema() -> RootNode<'static, Self::Query, Self::Mutation>;
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "status", rename_all = "kebab-case")]
 pub enum ApiResult<T> {
     Ok { data: Option<T> },
@@ -166,14 +166,16 @@ fn process_event<A: Aggregatrix>(
         Ok(result) => {
             tx.send(TxEvent::Store(
                 sequence,
-                json!({ "type": "ok", "data": result }),
+                ApiResult::Ok { data: Some(result) },
             ))?;
         }
         Err(e) => {
             println!("Event {} error: {}", sequence, e);
             tx.send(TxEvent::Store(
                 sequence,
-                json!({ "type": "error", "reason": e}),
+                ApiResult::Error {
+                    reason: e.to_string(),
+                },
             ))?;
         }
     }
