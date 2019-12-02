@@ -5,7 +5,6 @@ services:
   #   networks: [default, public]
   #   environment:
   #     DATABASE_URL: postgres://events:events@db/events
-  #     REDIS_URL: redis://redis/
   #     ROCKET_ENV: production
 
   db:
@@ -20,9 +19,6 @@ services:
       POSTGRES_USER: events
       POSTGRES_PASSWORD: events
       POSTGRES_DB: events
-
-  redis:
-    image: redis:5.0.6
 
 volumes:
   db:

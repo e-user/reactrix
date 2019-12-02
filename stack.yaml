@@ -1,6 +1,10 @@
 version: '3.7'
 
 services:
+  app:
+    ports:
+      - 5660:5660
+
   db:
     image: postgres:11.5
     environment:
@@ -15,11 +19,6 @@ services:
       - 5432:5432
     volumes:
       - db:/var/lib/postgresql/data:rw
-
-  redis:
-    image: redis:5.0.6
-    ports:
-      - 6379:6379
 
 networks:
   adminer:

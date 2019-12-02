@@ -16,15 +16,17 @@
 
 #![feature(proc_macro_hygiene, decl_macro, try_trait)]
 
+mod broker;
+
 use base64;
+use broker::Tx;
 use diesel::prelude::*;
 use diesel::result::DatabaseErrorKind;
 use diesel::result::Error as DieselError;
+use exitfailure::ExitFailure;
 use hex;
 use reactrix::keystore::{KeyStore, KeyStoreError};
 use reactrix::{models, schema};
-use redis;
-use redis::Commands;
 use rocket::fairing;
 use rocket::fairing::Fairing;
 use rocket::http::Status;
@@ -37,26 +39,21 @@ use rocket_contrib::json::{Json, JsonError, JsonValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::env;
+use std::error::Error;
 use std::ops::Try;
 use std::result;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use structopt::StructOpt;
 
 #[derive(Debug)]
 enum StoreError {
     RocketConfig(rocket::config::ConfigError),
-    Redis(redis::RedisError),
     Var(env::VarError),
 }
 
 impl From<rocket::config::ConfigError> for StoreError {
     fn from(error: rocket::config::ConfigError) -> Self {
         StoreError::RocketConfig(error)
-    }
-}
-
-impl From<redis::RedisError> for StoreError {
-    fn from(error: redis::RedisError) -> Self {
-        StoreError::Redis(error)
     }
 }
 
@@ -132,6 +129,15 @@ impl From<serde_json::Error> for StoreResponder {
     }
 }
 
+impl<'a> From<PoisonError<MutexGuard<'a, Tx>>> for StoreResponder {
+    fn from(error: PoisonError<MutexGuard<'a, Tx>>) -> Self {
+        StoreResponder::error(
+            Status::InternalServerError,
+            &format!("Couldn't obtain lock: {}", error.description().to_string()),
+        )
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 struct Event {
     version: i32,
@@ -156,12 +162,6 @@ pub struct Encrypted<T> {
 #[database("events")]
 struct StoreDbConn(PgConnection);
 
-fn notify(redis: State<redis::Client>, sequence: i64) -> Result<()> {
-    let mut redis = redis.get_connection()?;
-    redis.publish("sequence", sequence)?;
-    Ok(())
-}
-
 fn hex_decode(name: &str, data: &[u8]) -> result::Result<Vec<u8>, StoreResponder> {
     hex::decode(data).or_else(|e| {
         Err(StoreResponder::error(
@@ -183,7 +183,7 @@ fn base64_decode(name: &str, data: &[u8]) -> result::Result<Vec<u8>, StoreRespon
 #[post("/v1/create", format = "application/json", data = "<event>")]
 fn create(
     conn: StoreDbConn,
-    redis: State<redis::Client>,
+    tx: State<Arc<Mutex<Tx>>>,
     event: result::Result<Json<Event>, JsonError>,
 ) -> StoreResponder {
     let event = event?.into_inner();
@@ -193,7 +193,7 @@ fn create(
         .get_result::<models::Event>(&*conn);
 
     match result {
-        Ok(event) => match notify(redis, event.sequence) {
+        Ok(event) => match tx.lock()?.send(event.sequence) {
             Ok(()) => StoreResponder::ok(Status::Created, Some(&event.sequence)),
             Err(e) => StoreResponder::error(
                 Status::InternalServerError,
@@ -301,30 +301,20 @@ fn internal_server_error() -> StoreResponder {
     StoreResponder::error(Status::InternalServerError, &"Internal server error")
 }
 
-struct Redis;
+struct Zmq {
+    tx: Arc<Mutex<Tx>>,
+}
 
-impl Fairing for Redis {
+impl Fairing for Zmq {
     fn info(&self) -> fairing::Info {
         fairing::Info {
-            name: "Redis Client",
+            name: "ØMQ Channel",
             kind: fairing::Kind::Attach,
         }
     }
 
     fn on_attach(&self, rocket: Rocket) -> result::Result<Rocket, Rocket> {
-        match rocket.config().get_string("redis") {
-            Ok(url) => match redis::Client::open(&*url) {
-                Ok(client) => Ok(rocket.manage(client)),
-                Err(e) => {
-                    println!("Couldn't connect to Redis: {:?}", e);
-                    Err(rocket)
-                }
-            },
-            Err(_) => {
-                println!("Redis is not configured");
-                Err(rocket)
-            }
-        }
+        Ok(rocket.manage(self.tx.clone()))
     }
 }
 
@@ -333,12 +323,15 @@ impl Fairing for Redis {
 #[structopt(raw(setting = "structopt::clap::AppSettings::ColoredHelp"))]
 struct Cli {}
 
-fn main() {
+fn main() -> result::Result<(), ExitFailure> {
     Cli::from_args();
+    let tx = broker::launch()?;
 
-    rocket::ignite()
+    Err(rocket::ignite()
         .attach(StoreDbConn::fairing())
-        .attach(Redis)
+        .attach(Zmq {
+            tx: Arc::new(Mutex::new(tx)),
+        })
         .mount(
             "/",
             routes![
@@ -351,5 +344,6 @@ fn main() {
             ],
         )
         .register(catchers![not_found, internal_server_error])
-        .launch();
+        .launch()
+        .into())
 }

@@ -31,7 +31,6 @@ use diesel::prelude::*;
 use diesel::result::Error as DieselError;
 use failure::Fail;
 use juniper::{GraphQLObject, GraphQLType, RootNode};
-use redis::{ControlFlow, PubSubCommands};
 use results::{Tx, TxError, TxEvent};
 use rocket::Rocket;
 use serde::Deserialize;
@@ -45,6 +44,7 @@ use std::thread;
 
 pub use api::*;
 pub use models::{Event, NewEvent};
+pub use rmp_serde as rmp;
 pub use rocket;
 pub use serde::Serialize;
 pub use serde_json::Error as JsonError;
@@ -57,12 +57,10 @@ pub struct OutOfSequenceError(i64);
 
 #[derive(Debug, Fail)]
 pub enum AggregatrixError {
-    #[fail(display = "Environment variable is missing: {}", 0)]
-    Var(env::VarError),
+    #[fail(display = "Environment variable {} is missing", 0)]
+    Var(String),
     #[fail(display = "Database connection failed: {}", 0)]
     Connection(ConnectionError),
-    #[fail(display = "Redis connection failed: {}", 0)]
-    Redis(redis::RedisError),
     #[fail(display = "Database error: {}", 0)]
     Database(DieselError),
     #[fail(display = "Event out of sequence: {}", 0)]
@@ -71,23 +69,13 @@ pub enum AggregatrixError {
     ResultProcessing(TxError),
     #[fail(display = "Could not convert JSON: {}", 0)]
     JsonConversion(String),
-}
-
-impl From<env::VarError> for AggregatrixError {
-    fn from(error: env::VarError) -> Self {
-        AggregatrixError::Var(error)
-    }
+    #[fail(display = "Could not connect to ØMQ: {}", 0)]
+    ZmqConnect(String),
 }
 
 impl From<ConnectionError> for AggregatrixError {
     fn from(error: ConnectionError) -> Self {
         AggregatrixError::Connection(error)
-    }
-}
-
-impl From<redis::RedisError> for AggregatrixError {
-    fn from(error: redis::RedisError) -> Self {
-        AggregatrixError::Redis(error)
     }
 }
 
@@ -109,18 +97,27 @@ impl From<serde_json::Error> for AggregatrixError {
     }
 }
 
+impl From<zmq::Error> for AggregatrixError {
+    fn from(error: zmq::Error) -> Self {
+        AggregatrixError::ZmqConnect(format!("{}", error))
+    }
+}
+
 pub type Result<T> = std::result::Result<T, AggregatrixError>;
 
 fn database_url() -> Result<String> {
-    Ok(env::var("DATABASE_URL")?)
+    env::var("DATABASE_URL").or_else(|_| Err(AggregatrixError::Var("DATABASE_URL".to_string())))
 }
 
-fn redis_url() -> Result<String> {
-    Ok(env::var("REDIS_URL")?)
+fn zmq_url() -> Result<String> {
+    env::var("ZMQ_URL").or_else(|_| Err(AggregatrixError::Var("ZMQ_URL".to_string())))
 }
 
-fn redis_client() -> Result<redis::Client> {
-    Ok(redis::Client::open(&*redis_url()?)?)
+fn zmq_client() -> Result<zmq::Socket> {
+    let context = zmq::Context::new();
+    let socket = context.socket(zmq::SUB)?;
+    socket.connect(&zmq_url()?)?;
+    Ok(socket)
 }
 
 pub trait Aggregatrix {
@@ -200,24 +197,45 @@ fn init<A: Aggregatrix>(tx: &Tx, pg: &PgConnection) -> Result<(A::Context, i64)>
     Ok((context, *ids.last().unwrap_or(&0)))
 }
 
-fn redis_queue(queue: Arc<(Mutex<LinkedList<i64>>, Condvar)>) -> Result<()> {
-    let mut redis = redis_client()?.get_connection()?;
+fn zmq_queue(queue: Arc<(Mutex<LinkedList<i64>>, Condvar)>) -> Result<()> {
+    let socket = zmq_client()?;
+    socket.set_subscribe(b"sequence")?;
+
     thread::spawn(move || {
         let (queue, condvar) = &*queue;
-        redis.subscribe("sequence", |msg| match msg.get_payload::<i64>() {
-            Ok(id) => match queue.lock() {
-                Ok(mut queue) => {
-                    queue.push_back(id);
-                    condvar.notify_one();
-                    ControlFlow::Continue
+        loop {
+            let _topic = match socket.recv_bytes(0) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    println!("{:?}", e);
+                    continue;
                 }
-                Err(e) => ControlFlow::Break(format!("Couldn't lock mutex: {}", e)),
-            },
-            Err(e) => {
-                println!("{:?}", e);
-                ControlFlow::Continue
+            };
+
+            let data = match socket.recv_bytes(0) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    println!("{:?}", e);
+                    continue;
+                }
+            };
+
+            match rmp::from_read_ref(&data) {
+                Ok(id) => match queue.lock() {
+                    Ok(mut queue) => {
+                        queue.push_back(id);
+                        condvar.notify_one();
+                    }
+                    Err(e) => {
+                        println!("Couldn't lock mutex: {}", e);
+                        return;
+                    }
+                },
+                Err(e) => {
+                    println!("{:?}", e);
+                }
             }
-        })
+        }
     });
 
     Ok(())
@@ -227,7 +245,7 @@ pub fn ignite<A: 'static + Aggregatrix + Clone>() -> Result<Rocket> {
     let pg = PgConnection::establish(&database_url()?)?;
 
     let queue = Arc::new((Mutex::new(LinkedList::<i64>::new()), Condvar::new()));
-    redis_queue(queue.clone())?;
+    zmq_queue(queue.clone())?;
 
     let (tx_results, rx_results) = results::launch();
     let tx_results_rocket = tx_results.clone();

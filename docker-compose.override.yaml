@@ -15,6 +15,3 @@ services:
 
   db:
     restart: unless-stopped
-
-  redis:
-    restart: unless-stopped
