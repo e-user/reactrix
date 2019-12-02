@@ -325,6 +325,7 @@ struct Cli {}
 
 fn main() -> result::Result<(), ExitFailure> {
     Cli::from_args();
+    env_logger::builder().format_timestamp(None).init();
     let tx = broker::launch()?;
 
     Err(rocket::ignite()

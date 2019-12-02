@@ -15,6 +15,7 @@
 // limitations under the License.
 
 use super::ApiResult;
+use log::error;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -48,13 +49,13 @@ pub fn launch() -> (Tx, Rx) {
                 TxEvent::Retrieve(id) => match results.get(&id) {
                     Some(result) => {
                         if let Err(e) = tx_client.send(RxEvent::Result(result.clone())) {
-                            println!("{:?}", e);
+                            error!("{}", e);
                             return;
                         }
                     }
                     None => {
                         if let Err(e) = tx_client.send(RxEvent::NoValue) {
-                            println!("{:?}", e);
+                            error!("{}", e);
                             return;
                         }
                     }

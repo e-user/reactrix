@@ -14,6 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use log::{debug, error};
 use rmp_serde as rmp;
 use std::sync::mpsc;
 use std::thread;
@@ -31,10 +32,12 @@ pub fn launch() -> Result<Tx, failure::Error> {
 
     thread::spawn(move || {
         for id in rx {
+            debug!("Notify sequence {}", id);
+
             let bytes = match rmp::to_vec(&id) {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    println!("{}", e);
+                    error!("{}", e);
                     continue;
                 }
             };
@@ -43,7 +46,7 @@ pub fn launch() -> Result<Tx, failure::Error> {
                 .send("sequence", zmq::SNDMORE)
                 .and_then(|_| socket.send(&bytes, 0))
             {
-                println!("{}", e);
+                error!("{}", e);
             }
         }
     });

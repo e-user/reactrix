@@ -22,6 +22,8 @@ reqwest = "0.9.22"
 zmq = "0.9.2"
 exitfailure = "0.5.1"
 rmp-serde = "0.14.0"
+log = "0.4.8"
+env_logger = "0.7.1"
 
 [dependencies.rocket_contrib]
 version = "0.4.2"

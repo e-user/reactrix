@@ -31,6 +31,7 @@ use diesel::prelude::*;
 use diesel::result::Error as DieselError;
 use failure::Fail;
 use juniper::{GraphQLObject, GraphQLType, RootNode};
+use log::{error, info, warn};
 use results::{Tx, TxError, TxEvent};
 use rocket::Rocket;
 use serde::Deserialize;
@@ -153,7 +154,7 @@ fn process_event<A: Aggregatrix>(
 ) -> Result<()> {
     use schema::events::dsl;
 
-    println!("Processing event {}", sequence);
+    info!("Processing event {}", sequence);
 
     let event = dsl::events
         .filter(dsl::sequence.eq(sequence))
@@ -167,7 +168,7 @@ fn process_event<A: Aggregatrix>(
             ))?;
         }
         Err(e) => {
-            println!("Event {} error: {}", sequence, e);
+            warn!("Event {} error: {}", sequence, e);
             tx.send(TxEvent::Store(
                 sequence,
                 ApiResult::Error {
@@ -207,7 +208,7 @@ fn zmq_queue(queue: Arc<(Mutex<LinkedList<i64>>, Condvar)>) -> Result<()> {
             let _topic = match socket.recv_bytes(0) {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    println!("{:?}", e);
+                    warn!("{:?}", e);
                     continue;
                 }
             };
@@ -215,7 +216,7 @@ fn zmq_queue(queue: Arc<(Mutex<LinkedList<i64>>, Condvar)>) -> Result<()> {
             let data = match socket.recv_bytes(0) {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    println!("{:?}", e);
+                    error!("{:?}", e);
                     continue;
                 }
             };
@@ -227,12 +228,12 @@ fn zmq_queue(queue: Arc<(Mutex<LinkedList<i64>>, Condvar)>) -> Result<()> {
                         condvar.notify_one();
                     }
                     Err(e) => {
-                        println!("Couldn't lock mutex: {}", e);
+                        error!("Couldn't lock mutex: {}", e);
                         return;
                     }
                 },
                 Err(e) => {
-                    println!("{:?}", e);
+                    error!("{:?}", e);
                 }
             }
         }
