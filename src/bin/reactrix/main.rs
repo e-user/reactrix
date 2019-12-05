@@ -16,15 +16,16 @@
 
 #![feature(proc_macro_hygiene, decl_macro, try_trait)]
 
-mod broker;
+mod mq;
 
 use base64;
-use broker::Tx;
 use diesel::prelude::*;
 use diesel::result::DatabaseErrorKind;
 use diesel::result::Error as DieselError;
+use dotenv::dotenv;
 use exitfailure::ExitFailure;
 use hex;
+use mq::Tx;
 use reactrix::keystore::{KeyStore, KeyStoreError};
 use reactrix::{models, schema};
 use rocket::fairing;
@@ -325,8 +326,9 @@ struct Cli {}
 
 fn main() -> result::Result<(), ExitFailure> {
     Cli::from_args();
+    dotenv()?;
     env_logger::builder().format_timestamp(None).init();
-    let tx = broker::launch()?;
+    let tx = mq::launch()?;
 
     Err(rocket::ignite()
         .attach(StoreDbConn::fairing())
