@@ -84,8 +84,9 @@ pub fn launch() -> Result<Tx, failure::Error> {
 
     thread::spawn(move || loop {
         let _event = monitor.recv_msg(0);
-        let _address = monitor.recv_msg(0);
-        debug!("New connection");
+        let address = monitor.recv_string(0).unwrap().unwrap();
+
+        debug!("New connection at {}", &address);
         poll_tx_monitor.send(Publish::Send).unwrap();
     });
 
