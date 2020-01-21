@@ -14,11 +14,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{ApiResult, Encrypted};
+use super::ApiResult;
 use failure::Fail;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
-use serde_json::json;
 use std::error::Error;
 use std::io::Read;
 use std::ops::Deref;
@@ -49,77 +47,6 @@ impl From<std::io::Error> for ApiError {
 }
 
 type Result<T> = result::Result<T, ApiError>;
-
-pub fn generate_key() -> Result<String> {
-    let client = reqwest::Client::new();
-
-    match client
-        .get("http://localhost:8000/v1/generate-key/")
-        .send()?
-        .json::<ApiResult<String>>()?
-    {
-        ApiResult::Ok { data: Some(data) } => Ok(data),
-        ApiResult::Ok { data: None } => Err(ApiError("Empty reponse".to_string())),
-        ApiResult::Error { reason } => Err(ApiError(reason)),
-    }
-}
-
-pub fn generate_nonce() -> Result<String> {
-    let client = reqwest::Client::new();
-
-    match client
-        .get("http://localhost:8000/v1/generate-nonce/")
-        .send()?
-        .json::<ApiResult<String>>()?
-    {
-        ApiResult::Ok { data: Some(data) } => Ok(data),
-        ApiResult::Ok { data: None } => Err(ApiError("Empty reponse".to_string())),
-        ApiResult::Error { reason } => Err(ApiError(reason)),
-    }
-}
-
-pub fn decrypt<T>(enc: &Encrypted) -> Result<T>
-where
-    T: DeserializeOwned,
-{
-    let client = reqwest::Client::new();
-    let result = client
-        .post(&format!("http://localhost:8000/v1/decrypt/{}", &enc.key_id))
-        .json(&json!({
-            "nonce": &enc.nonce,
-            "data": &enc.data,
-        }))
-        .send()?
-        .json::<ApiResult<T>>()?;
-
-    match result {
-        ApiResult::Ok { data: Some(data) } => Ok(data),
-        ApiResult::Ok { data: None } => Err(ApiError("Empty reponse".to_string())),
-        ApiResult::Error { reason } => Err(ApiError(reason)),
-    }
-}
-
-pub fn encrypt<T>(key_id: &str, nonce: &str, data: T) -> Result<String>
-where
-    T: Serialize,
-{
-    let client = reqwest::Client::new();
-
-    let result = client
-        .post(&format!("http://localhost:8000/v1/encrypt/{}", key_id))
-        .json(&json!({
-            "nonce": nonce,
-            "data": data
-        }))
-        .send()?
-        .json::<ApiResult<String>>()?;
-
-    match result {
-        ApiResult::Ok { data: Some(data) } => Ok(data),
-        ApiResult::Ok { data: None } => Err(ApiError("Empty reponse".to_string())),
-        ApiResult::Error { reason } => Err(ApiError(reason)),
-    }
-}
 
 pub fn store(data: &[u8]) -> Result<String> {
     let client = reqwest::Client::new();

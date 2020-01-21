@@ -15,10 +15,13 @@
 // limitations under the License.
 
 use super::ApiResult;
+use failure::Fail;
 use log::error;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::error::Error;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 pub enum TxEvent {
@@ -34,6 +37,42 @@ pub enum RxEvent {
 pub type Tx = mpsc::Sender<TxEvent>;
 pub type Rx = mpsc::Receiver<RxEvent>;
 pub type TxError = mpsc::SendError<TxEvent>;
+pub type Channel = Arc<Mutex<(Tx, Rx)>>;
+
+#[derive(Debug, Fail)]
+pub enum RetrieveError {
+    #[fail(display = "Tx channel died: {:?}", _0)]
+    TxDead(TxError),
+    #[fail(display = "Rx channel died: {:?}", _0)]
+    RxDead(mpsc::RecvError),
+    #[fail(display = "Couldn't acquire lock: {}", _0)]
+    Lock(String),
+}
+
+impl From<TxError> for RetrieveError {
+    fn from(error: TxError) -> Self {
+        Self::TxDead(error)
+    }
+}
+
+impl From<mpsc::RecvError> for RetrieveError {
+    fn from(error: mpsc::RecvError) -> Self {
+        Self::RxDead(error)
+    }
+}
+
+pub fn retrieve(id: i64, channel: Channel) -> Result<RxEvent, RetrieveError> {
+    match channel.lock() {
+        Ok(guard) => {
+            let (tx, rx) = &*guard;
+
+            tx.send(TxEvent::Retrieve(id))?;
+            Ok(rx.recv()?)
+        }
+
+        Err(e) => Err(RetrieveError::Lock(e.description().to_string())),
+    }
+}
 
 pub fn launch() -> (Tx, Rx) {
     let mut results = HashMap::new();

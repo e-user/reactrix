@@ -19,22 +19,18 @@
 #[macro_use]
 extern crate diesel;
 
-mod api;
+pub mod api;
 pub mod datastore;
-pub mod keystore;
 pub mod models;
-mod results;
+pub mod results;
 pub mod schema;
-mod server;
 
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::result::Error as DieselError;
 use failure::Fail;
-use juniper::{GraphQLObject, GraphQLType, RootNode};
 use log::{error, info, warn};
-use results::{Tx, TxError, TxEvent};
-use rocket::{Request, Rocket};
+use results::{Channel, Tx, TxError, TxEvent};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::LinkedList;
@@ -44,15 +40,8 @@ use std::result;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
-pub use api::*;
-pub use juniper;
 pub use models::{Event, NewEvent};
 pub use rmp_serde as rmp;
-pub use rocket;
-pub use serde;
-pub use serde_json::Error as JsonError;
-pub use serde_json::Value as JsonValue;
-pub use server::ProcessResponder;
 
 #[derive(Debug, Fail)]
 #[fail(display = "Out of Sequence: {}", 0)]
@@ -124,14 +113,15 @@ fn zmq_client() -> Result<zmq::Socket> {
 }
 
 pub trait Aggregatrix {
-    type Context: Default + Clone + Send + Sync + 'static;
+    type State: Default + Clone + Send + Sync + 'static;
     type Error: Display + Serialize;
-    type Query: GraphQLType<Context = Self::Context, TypeInfo = ()> + Send + Sync + Clone;
-    type Mutation: GraphQLType<Context = Self::Context, TypeInfo = ()> + Send + Sync + Clone;
 
-    fn dispatch(context: &Self::Context, event: &Event) -> result::Result<Value, Self::Error>;
-    fn context(request: &Request) -> &'static Self::Context;
-    fn schema() -> RootNode<'static, Self::Query, Self::Mutation>;
+    fn dispatch(state: &Self::State, event: &Event) -> result::Result<Value, Self::Error>;
+}
+
+pub struct Reactrix<A: Aggregatrix> {
+    pub state: A::State,
+    pub results: Channel,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -141,17 +131,9 @@ pub enum ApiResult<T> {
     Error { reason: String },
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, GraphQLObject)]
-#[serde(rename_all = "kebab-case")]
-pub struct Encrypted {
-    pub key_id: String,
-    pub nonce: String,
-    pub data: String,
-}
-
 fn process_event<A: Aggregatrix>(
     sequence: i64,
-    context: &A::Context,
+    state: &A::State,
     tx: &Tx,
     pg: &PgConnection,
 ) -> Result<()> {
@@ -163,7 +145,7 @@ fn process_event<A: Aggregatrix>(
         .filter(dsl::sequence.eq(sequence))
         .first::<Event>(pg)?;
 
-    match A::dispatch(context, &event) {
+    match A::dispatch(state, &event) {
         Ok(result) => {
             tx.send(TxEvent::Store(
                 sequence,
@@ -184,7 +166,7 @@ fn process_event<A: Aggregatrix>(
     Ok(())
 }
 
-fn init<A: Aggregatrix>(tx: &Tx, pg: &PgConnection) -> Result<(A::Context, i64)> {
+fn init<A: Aggregatrix>(tx: &Tx, pg: &PgConnection) -> Result<(A::State, i64)> {
     use schema::events::dsl::*;
 
     let ids = events
@@ -192,13 +174,13 @@ fn init<A: Aggregatrix>(tx: &Tx, pg: &PgConnection) -> Result<(A::Context, i64)>
         .order(sequence.asc())
         .load::<i64>(pg)?;
 
-    let context = A::Context::default();
+    let state = A::State::default();
 
     for id in ids.iter() {
-        process_event::<A>(*id, &context, tx, pg)?;
+        process_event::<A>(*id, &state, tx, pg)?;
     }
 
-    Ok((context, *ids.last().unwrap_or(&0)))
+    Ok((state, *ids.last().unwrap_or(&0)))
 }
 
 fn zmq_queue(queue: Arc<(Mutex<LinkedList<i64>>, Condvar)>) -> Result<()> {
@@ -245,17 +227,17 @@ fn zmq_queue(queue: Arc<(Mutex<LinkedList<i64>>, Condvar)>) -> Result<()> {
     Ok(())
 }
 
-pub fn ignite<A: 'static + Aggregatrix + Clone>() -> Result<Rocket> {
+pub fn launch<A: 'static + Aggregatrix + Clone>() -> Result<Reactrix<A>> {
     let pg = PgConnection::establish(&database_url()?)?;
 
     let queue = Arc::new((Mutex::new(LinkedList::<i64>::new()), Condvar::new()));
     zmq_queue(queue.clone())?;
 
     let (tx_results, rx_results) = results::launch();
-    let tx_results_rocket = tx_results.clone();
+    let tx_results_events = tx_results.clone();
 
-    let (context, mut sequence) = init::<A>(&tx_results, &pg)?;
-    let server_context = context.clone();
+    let (state, mut sequence) = init::<A>(&tx_results_events, &pg)?;
+    let server_state = state.clone();
 
     thread::spawn(move || {
         let (queue, condvar) = &*queue;
@@ -269,16 +251,15 @@ pub fn ignite<A: 'static + Aggregatrix + Clone>() -> Result<Rocket> {
             if let Some(id) = queue.pop_front() {
                 drop(queue);
                 if id > sequence {
-                    process_event::<A>(id, &context, &tx_results, &pg).unwrap();
+                    process_event::<A>(id, &state, &tx_results_events, &pg).unwrap();
                     sequence = id;
                 }
             }
         }
     });
 
-    Ok(server::ignite::<A>(
-        tx_results_rocket,
-        rx_results,
-        server_context,
-    ))
+    Ok(Reactrix {
+        state: server_state,
+        results: Arc::new(Mutex::new((tx_results, rx_results))),
+    })
 }

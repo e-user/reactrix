@@ -1,6 +1,6 @@
 // This file is part of reactrix.
 //
-// Copyright 2019 Alexander Dorn
+// Copyright 2019-2020 Alexander Dorn
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -92,14 +92,14 @@ fn retrieve(id: i64, state: State<Mutex<(Tx, Rx)>>) -> ProcessResponder {
 
 struct GraphQLHandler<A: Aggregatrix> {
     schema: RootNode<'static, A::Query, A::Mutation>,
-    context: A::Context,
+    state: A::State,
 }
 
 impl<A: Aggregatrix> Clone for GraphQLHandler<A> {
     fn clone(&self) -> Self {
         Self {
             schema: A::schema(),
-            context: self.context.clone(),
+            state: self.state.clone(),
         }
     }
 }
@@ -107,10 +107,10 @@ impl<A: Aggregatrix> Clone for GraphQLHandler<A> {
 impl<A: 'static + Aggregatrix + Clone> Handler for GraphQLHandler<A> {
     fn handle<'r>(&self, request: &'r Request, data: Data) -> Outcome<'r> {
         let schema = &self.schema;
-        let context = &self.context;
+        let context = A::context(&self.state, &request);
 
         if request.uri().path() == "/schema.json" {
-            match juniper::introspect(schema, context, IntrospectionFormat::default()) {
+            match juniper::introspect(schema, &context, IntrospectionFormat::default()) {
                 Ok((res, _errors)) => Outcome::from(request, Json(res)),
                 Err(error) => Outcome::from(
                     request,
@@ -122,7 +122,9 @@ impl<A: 'static + Aggregatrix + Clone> Handler for GraphQLHandler<A> {
             match GraphQLRequest::from_data(request, data) {
                 Success(graphql_request) => Outcome::from(
                     request,
-                    graphql_request.execute(schema, context).respond_to(request),
+                    graphql_request
+                        .execute(schema, &context)
+                        .respond_to(request),
                 ),
                 Forward(data) => Outcome::Forward(data),
                 Failure((status, error)) => Outcome::from(
@@ -154,7 +156,7 @@ fn not_found() -> ProcessResponder {
     ProcessResponder::error(Status::NotFound, &"No such resource")
 }
 
-pub fn ignite<A: 'static + Aggregatrix + Clone>(tx: Tx, rx: Rx, context: A::Context) -> Rocket {
+pub fn ignite<A: 'static + Aggregatrix + Clone>(tx: Tx, rx: Rx, state: A::State) -> Rocket {
     rocket::ignite()
         .manage(Mutex::new((tx, rx)))
         .mount("/", routes![retrieve, graphiql])
@@ -162,7 +164,7 @@ pub fn ignite<A: 'static + Aggregatrix + Clone>(tx: Tx, rx: Rx, context: A::Cont
             "/",
             GraphQLHandler::<A> {
                 schema: A::schema(),
-                context,
+                state,
             },
         )
         .register(catchers![not_found])

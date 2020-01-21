@@ -27,45 +27,23 @@ use exitfailure::ExitFailure;
 use hex;
 use mq::Tx;
 use reactrix::datastore::{DataStore, DataStoreError};
-use reactrix::keystore::{KeyStore, KeyStoreError};
 use reactrix::{models, schema};
 use rocket::fairing;
 use rocket::fairing::Fairing;
 use rocket::http::Status;
 use rocket::response::Responder;
-use rocket::{catch, catchers, delete, get, post, put, routes, Request, Response, Rocket, State};
+use rocket::{catch, catchers, get, post, put, routes, Request, Response, Rocket, State};
 use rocket_contrib::database;
 use rocket_contrib::databases::diesel::PgConnection;
 use rocket_contrib::json;
 use rocket_contrib::json::{Json, JsonError, JsonValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::env;
 use std::error::Error;
 use std::ops::Try;
-use std::result;
+use std::result::Result;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use structopt::StructOpt;
-
-#[derive(Debug)]
-enum StoreError {
-    RocketConfig(rocket::config::ConfigError),
-    Var(env::VarError),
-}
-
-impl From<rocket::config::ConfigError> for StoreError {
-    fn from(error: rocket::config::ConfigError) -> Self {
-        StoreError::RocketConfig(error)
-    }
-}
-
-impl From<env::VarError> for StoreError {
-    fn from(error: env::VarError) -> Self {
-        StoreError::Var(error)
-    }
-}
-
-type Result<T> = result::Result<T, StoreError>;
 
 #[derive(Debug)]
 struct StoreResponder(Status, JsonValue);
@@ -84,7 +62,7 @@ impl StoreResponder {
 }
 
 impl<'r> Responder<'r> for StoreResponder {
-    fn respond_to(self, req: &Request) -> result::Result<Response<'r>, Status> {
+    fn respond_to(self, req: &Request) -> Result<Response<'r>, Status> {
         Response::build_from(self.1.respond_to(req)?)
             .status(self.0)
             .ok()
@@ -95,7 +73,7 @@ impl Try for StoreResponder {
     type Ok = Self;
     type Error = Self;
 
-    fn into_result(self) -> result::Result<Self, Self> {
+    fn into_result(self) -> Result<Self, Self> {
         if self.0.code < 300 {
             Ok(self)
         } else {
@@ -164,17 +142,8 @@ pub struct Encrypted<T> {
 #[database("events")]
 struct StoreDbConn(PgConnection);
 
-fn hex_decode(name: &str, data: &[u8]) -> result::Result<Vec<u8>, StoreResponder> {
+fn hex_decode(name: &str, data: &[u8]) -> Result<Vec<u8>, StoreResponder> {
     hex::decode(data).or_else(|e| {
-        Err(StoreResponder::error(
-            Status::BadRequest,
-            &format!("Couldn't decode {}: {}", name, e),
-        ))
-    })
-}
-
-fn base64_decode(name: &str, data: &[u8]) -> result::Result<Vec<u8>, StoreResponder> {
-    base64::decode(data).or_else(|e| {
         Err(StoreResponder::error(
             Status::BadRequest,
             &format!("Couldn't decode {}: {}", name, e),
@@ -186,7 +155,7 @@ fn base64_decode(name: &str, data: &[u8]) -> result::Result<Vec<u8>, StoreRespon
 fn create(
     conn: StoreDbConn,
     tx: State<Arc<Mutex<Tx>>>,
-    event: result::Result<Json<Event>, JsonError>,
+    event: Result<Json<Event>, JsonError>,
 ) -> StoreResponder {
     let event = event?.into_inner();
 
@@ -206,90 +175,6 @@ fn create(
             StoreResponder::error(Status::BadRequest, &"Out of Sequence")
         }
         Err(e) => StoreResponder::error(Status::InternalServerError, &format!("{:?}", e)),
-    }
-}
-
-#[get("/v1/generate-key")]
-fn generate_key(conn: StoreDbConn) -> StoreResponder {
-    let store = KeyStore::new(&conn);
-    match store.generate_key() {
-        Ok(key) => StoreResponder::ok(Status::Created, Some(&hex::encode(key))),
-        Err(e) => StoreResponder::error(
-            Status::InternalServerError,
-            &format!("Couldn't generate key: {}", e),
-        ),
-    }
-}
-
-#[get("/v1/generate-nonce")]
-fn generate_nonce() -> StoreResponder {
-    StoreResponder::ok(
-        Status::Ok,
-        Some(&base64::encode(&KeyStore::generate_nonce())),
-    )
-}
-
-#[delete("/v1/delete-key/<id>")]
-fn delete_key(conn: StoreDbConn, id: String) -> StoreResponder {
-    let store = KeyStore::new(&conn);
-    let id = hex_decode("id", id.as_bytes())?;
-
-    match store.delete_key(&id) {
-        Ok(_) | Err(KeyStoreError::NoKey) => StoreResponder::ok::<()>(Status::Ok, None),
-        Err(e) => StoreResponder::error(
-            Status::InternalServerError,
-            &format!("Couldn't delete key: {}", e),
-        ),
-    }
-}
-
-#[post("/v1/encrypt/<id>", format = "application/json", data = "<data>")]
-fn encrypt(
-    conn: StoreDbConn,
-    id: String,
-    data: result::Result<Json<Encrypted<Value>>, JsonError>,
-) -> StoreResponder {
-    let store = KeyStore::new(&conn);
-    let id = hex_decode("id", id.as_bytes())?;
-    let data = data?;
-    let nonce = base64_decode("nonce", data.nonce.as_bytes())?;
-    let data = serde_json::to_string(&data.data)?;
-
-    match store.encrypt(&id, &nonce, &data.as_bytes()) {
-        Ok(data) => StoreResponder::ok(Status::Ok, Some(&base64::encode(&data))),
-        Err(KeyStoreError::NoKey) => StoreResponder::error(Status::NotFound, "No such key"),
-        Err(e) => StoreResponder::error(
-            Status::InternalServerError,
-            &format!("Couldn't encrypt data: {}", e),
-        ),
-    }
-}
-
-#[post("/v1/decrypt/<id>", format = "application/json", data = "<data>")]
-fn decrypt(
-    conn: StoreDbConn,
-    id: String,
-    data: result::Result<Json<Encrypted<String>>, JsonError>,
-) -> StoreResponder {
-    let store = KeyStore::new(&conn);
-    let id = hex_decode("id", id.as_bytes())?;
-    let data = data?;
-    let nonce = base64_decode("nonce", data.nonce.as_bytes())?;
-    let data = base64_decode("data", data.data.as_bytes())?;
-
-    match store.decrypt(&id, &nonce, &data) {
-        Ok(data) => match serde_json::from_slice::<Value>(&data) {
-            Ok(data) => StoreResponder::ok(Status::Ok, Some(&data)),
-            Err(_) => StoreResponder::error(
-                Status::InternalServerError,
-                "Could not decode decrypted data as JSON",
-            ),
-        },
-        Err(KeyStoreError::NoKey) => StoreResponder::error(Status::NotFound, "No such key"),
-        Err(e) => StoreResponder::error(
-            Status::InternalServerError,
-            &format!("Couldn't decrypt data: {}", e),
-        ),
     }
 }
 
@@ -342,7 +227,7 @@ impl Fairing for Zmq {
         }
     }
 
-    fn on_attach(&self, rocket: Rocket) -> result::Result<Rocket, Rocket> {
+    fn on_attach(&self, rocket: Rocket) -> Result<Rocket, Rocket> {
         Ok(rocket.manage(self.tx.clone()))
     }
 }
@@ -352,7 +237,7 @@ impl Fairing for Zmq {
 #[structopt(raw(setting = "structopt::clap::AppSettings::ColoredHelp"))]
 struct Cli {}
 
-fn main() -> result::Result<(), ExitFailure> {
+fn main() -> Result<(), ExitFailure> {
     Cli::from_args();
     dotenv()?;
     env_logger::builder().format_timestamp(None).init();
@@ -363,19 +248,7 @@ fn main() -> result::Result<(), ExitFailure> {
         .attach(Zmq {
             tx: Arc::new(Mutex::new(tx)),
         })
-        .mount(
-            "/",
-            routes![
-                create,
-                generate_key,
-                generate_nonce,
-                delete_key,
-                encrypt,
-                decrypt,
-                store,
-                retrieve
-            ],
-        )
+        .mount("/", routes![create, store, retrieve])
         .register(catchers![not_found, internal_server_error])
         .launch()
         .into())
