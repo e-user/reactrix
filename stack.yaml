@@ -23,8 +23,6 @@ services:
 networks:
   adminer:
     external: true
-  public:
-    external: true
 
 volumes:
   db:
