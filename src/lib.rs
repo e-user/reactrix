@@ -1,6 +1,6 @@
 // This file is part of reactrix.
 //
-// Copyright 2019 Alexander Dorn
+// Copyright 2019-2020 Alexander Dorn
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@
 extern crate diesel;
 
 mod api;
+pub mod datastore;
 pub mod keystore;
 pub mod models;
 mod results;
@@ -33,8 +34,8 @@ use failure::Fail;
 use juniper::{GraphQLObject, GraphQLType, RootNode};
 use log::{error, info, warn};
 use results::{Tx, TxError, TxEvent};
-use rocket::Rocket;
-use serde::Deserialize;
+use rocket::{Request, Rocket};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::LinkedList;
 use std::env;
@@ -44,10 +45,11 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
 pub use api::*;
+pub use juniper;
 pub use models::{Event, NewEvent};
 pub use rmp_serde as rmp;
 pub use rocket;
-pub use serde::Serialize;
+pub use serde;
 pub use serde_json::Error as JsonError;
 pub use serde_json::Value as JsonValue;
 pub use server::ProcessResponder;
@@ -128,6 +130,7 @@ pub trait Aggregatrix {
     type Mutation: GraphQLType<Context = Self::Context, TypeInfo = ()> + Send + Sync + Clone;
 
     fn dispatch(context: &Self::Context, event: &Event) -> result::Result<Value, Self::Error>;
+    fn context(request: &Request) -> &'static Self::Context;
     fn schema() -> RootNode<'static, Self::Query, Self::Mutation>;
 }
 

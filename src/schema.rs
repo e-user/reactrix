@@ -1,4 +1,11 @@
 table! {
+    datastore (hash) {
+        hash -> Bytea,
+        data -> Bytea,
+    }
+}
+
+table! {
     events (sequence) {
         sequence -> Int8,
         version -> Int4,
@@ -15,6 +22,7 @@ table! {
 }
 
 allow_tables_to_appear_in_same_query!(
+    datastore,
     events,
     keystore,
 );

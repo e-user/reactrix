@@ -1,6 +1,6 @@
 // This file is part of reactrix.
 //
-// Copyright 2019 Alexander Dorn
+// Copyright 2019-2010 Alexander Dorn
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::json;
 use std::error::Error;
+use std::io::Read;
 use std::ops::Deref;
 use std::result;
 
@@ -37,6 +38,12 @@ impl Deref for ApiError {
 
 impl From<reqwest::Error> for ApiError {
     fn from(error: reqwest::Error) -> Self {
+        ApiError(error.description().to_string())
+    }
+}
+
+impl From<std::io::Error> for ApiError {
+    fn from(error: std::io::Error) -> Self {
         ApiError(error.description().to_string())
     }
 }
@@ -112,6 +119,28 @@ where
         ApiResult::Ok { data: None } => Err(ApiError("Empty reponse".to_string())),
         ApiResult::Error { reason } => Err(ApiError(reason)),
     }
+}
+
+pub fn store(data: &[u8]) -> Result<String> {
+    let client = reqwest::Client::new();
+
+    Ok(client
+        .put("http://localhost:8000/v1/store")
+        .body(data.to_owned())
+        .send()?
+        .text()?)
+}
+
+pub fn retrieve(id: &str) -> Result<Vec<u8>> {
+    let client = reqwest::Client::new();
+    let mut data = Vec::<u8>::new();
+
+    client
+        .get(&format!("http://localhost:8000/v1/retrieve/{}", id))
+        .send()?
+        .read(&mut data)?;
+
+    Ok(data)
 }
 
 pub fn create<T>(event: T) -> Result<i32>

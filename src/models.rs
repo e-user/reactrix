@@ -1,6 +1,6 @@
 // This file is part of reactrix.
 //
-// Copyright 2019 Alexander Dorn
+// Copyright 2019-2020 Alexander Dorn
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -39,4 +39,11 @@ pub struct NewEvent {
 pub struct Key {
     pub hash: Vec<u8>,
     pub key: Vec<u8>,
+}
+
+#[derive(Queryable, Insertable)]
+#[table_name = "datastore"]
+pub struct Data {
+    pub hash: Vec<u8>,
+    pub data: Vec<u8>,
 }

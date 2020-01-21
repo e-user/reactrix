@@ -1,6 +1,6 @@
 // This file is part of reactrix.
 //
-// Copyright 2019 Alexander Dorn
+// Copyright 2019-2020 Alexander Dorn
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,13 +26,14 @@ use dotenv::dotenv;
 use exitfailure::ExitFailure;
 use hex;
 use mq::Tx;
+use reactrix::datastore::{DataStore, DataStoreError};
 use reactrix::keystore::{KeyStore, KeyStoreError};
 use reactrix::{models, schema};
 use rocket::fairing;
 use rocket::fairing::Fairing;
 use rocket::http::Status;
 use rocket::response::Responder;
-use rocket::{catch, catchers, delete, get, post, routes, Request, Response, Rocket, State};
+use rocket::{catch, catchers, delete, get, post, put, routes, Request, Response, Rocket, State};
 use rocket_contrib::database;
 use rocket_contrib::databases::diesel::PgConnection;
 use rocket_contrib::json;
@@ -292,6 +293,33 @@ fn decrypt(
     }
 }
 
+#[put("/v1/store", data = "<data>")]
+fn store(conn: StoreDbConn, data: Vec<u8>) -> StoreResponder {
+    let store = DataStore::new(&conn);
+    match store.store(&data) {
+        Ok(hash) => StoreResponder::ok(Status::Ok, Some(&hex::encode(hash))),
+        Err(e) => StoreResponder::error(
+            Status::InternalServerError,
+            &format!("Couldn't store data: {}", e),
+        ),
+    }
+}
+
+#[get("/v1/retrieve/<id>")]
+fn retrieve(conn: StoreDbConn, id: String) -> StoreResponder {
+    let store = DataStore::new(&conn);
+    match store.retrieve(&hex_decode("id", id.as_bytes())?) {
+        Ok(data) => StoreResponder::ok(Status::Ok, Some(&base64::encode(&data))),
+        Err(DataStoreError::NoRecord) => {
+            StoreResponder::error(Status::NotFound, &format!("{}", DataStoreError::NoRecord))
+        }
+        Err(e) => StoreResponder::error(
+            Status::InternalServerError,
+            &format!("Couldn't retrieve data: {}", e),
+        ),
+    }
+}
+
 #[catch(404)]
 fn not_found() -> StoreResponder {
     StoreResponder::error(Status::NotFound, &"No such resource")
@@ -343,7 +371,9 @@ fn main() -> result::Result<(), ExitFailure> {
                 generate_nonce,
                 delete_key,
                 encrypt,
-                decrypt
+                decrypt,
+                store,
+                retrieve
             ],
         )
         .register(catchers![not_found, internal_server_error])
