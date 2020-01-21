@@ -9,6 +9,12 @@ of events versus [the right to be forgotten], as required by the European [GDPR]
 The project is an early work in progress and APIs are changing, so it's not
 considered for public consumption, yet.
 
+[Event Sourcing]: https://docs.microsoft.com/en-us/azure/architecture/patterns/event-sourcing
+[Event Store]: https://en.wikipedia.org/wiki/Event_store
+[Rust]: https://www.rust-lang.org/
+[the right to be forgotten]: https://en.wikipedia.org/wiki/Right_to_be_forgotten
+[GDPR]: https://en.wikipedia.org/wiki/General_Data_Protection_Regulation
+
 ## Copyright
 
 Copyright 2019-2020 Alexander Dorn
