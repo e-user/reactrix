@@ -70,7 +70,7 @@ pub fn retrieve(id: &str) -> Result<Vec<u8>> {
     Ok(data)
 }
 
-pub fn create<T>(event: T) -> Result<i32>
+pub fn create<T>(event: T) -> Result<f64>
 where
     T: Serialize,
 {
@@ -80,7 +80,7 @@ where
         .post("http://localhost:8000/v1/create")
         .json(&event)
         .send()?
-        .json::<ApiResult<i32>>()?;
+        .json::<ApiResult<f64>>()?;
 
     match result {
         ApiResult::Ok { data: Some(data) } => Ok(data),

@@ -30,9 +30,8 @@ use diesel::prelude::*;
 use diesel::result::Error as DieselError;
 use failure::Fail;
 use log::{error, info, warn};
-use results::{Channel, Tx, TxError, TxEvent};
+use results::{Channel, Tx, TxEvent};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::LinkedList;
 use std::env;
 use std::fmt::{Debug, Display};
@@ -58,7 +57,7 @@ pub enum AggregatrixError {
     #[fail(display = "Event out of sequence: {}", 0)]
     OutOfSequence(OutOfSequenceError),
     #[fail(display = "Tx error: {}", 0)]
-    ResultProcessing(TxError),
+    ResultProcessing(String),
     #[fail(display = "Could not convert JSON: {}", 0)]
     JsonConversion(String),
     #[fail(display = "Could not connect to ØMQ: {}", 0)]
@@ -74,12 +73,6 @@ impl From<ConnectionError> for AggregatrixError {
 impl From<DieselError> for AggregatrixError {
     fn from(error: DieselError) -> Self {
         AggregatrixError::Database(error)
-    }
-}
-
-impl From<TxError> for AggregatrixError {
-    fn from(error: TxError) -> Self {
-        AggregatrixError::ResultProcessing(error)
     }
 }
 
@@ -114,14 +107,15 @@ fn zmq_client() -> Result<zmq::Socket> {
 
 pub trait Aggregatrix {
     type State: Default + Clone + Send + Sync + 'static;
-    type Error: Display + Serialize;
+    type Error: Clone + Display + Serialize + Send + 'static;
+    type Result: Clone + Send + 'static;
 
-    fn dispatch(state: &Self::State, event: &Event) -> result::Result<Value, Self::Error>;
+    fn dispatch(state: &Self::State, event: &Event) -> result::Result<Self::Result, Self::Error>;
 }
 
 pub struct Reactrix<A: Aggregatrix> {
     pub state: A::State,
-    pub results: Channel,
+    pub results: Channel<A>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -134,7 +128,7 @@ pub enum ApiResult<T> {
 fn process_event<A: Aggregatrix>(
     sequence: i64,
     state: &A::State,
-    tx: &Tx,
+    tx: &Tx<A>,
     pg: &PgConnection,
 ) -> Result<()> {
     use schema::events::dsl;
@@ -147,26 +141,22 @@ fn process_event<A: Aggregatrix>(
 
     match A::dispatch(state, &event) {
         Ok(result) => {
-            tx.send(TxEvent::Store(
-                sequence,
-                ApiResult::Ok { data: Some(result) },
-            ))?;
+            if let Err(e) = tx.send(TxEvent::Store(sequence, Ok(result))) {
+                return Err(AggregatrixError::ResultProcessing(format!("{:?}", e)));
+            }
         }
         Err(e) => {
             warn!("Event {} error: {}", sequence, e);
-            tx.send(TxEvent::Store(
-                sequence,
-                ApiResult::Error {
-                    reason: e.to_string(),
-                },
-            ))?;
+            if let Err(e) = tx.send(TxEvent::Store(sequence, Err(e))) {
+                return Err(AggregatrixError::ResultProcessing(format!("{:?}", e)));
+            }
         }
     }
 
     Ok(())
 }
 
-fn init<A: Aggregatrix>(tx: &Tx, pg: &PgConnection) -> Result<(A::State, i64)> {
+fn init<A: Aggregatrix>(tx: &Tx<A>, pg: &PgConnection) -> Result<(A::State, i64)> {
     use schema::events::dsl::*;
 
     let ids = events
@@ -233,7 +223,7 @@ pub fn launch<A: 'static + Aggregatrix + Clone>() -> Result<Reactrix<A>> {
     let queue = Arc::new((Mutex::new(LinkedList::<i64>::new()), Condvar::new()));
     zmq_queue(queue.clone())?;
 
-    let (tx_results, rx_results) = results::launch();
+    let (tx_results, rx_results) = results::launch::<A>();
     let tx_results_events = tx_results.clone();
 
     let (state, mut sequence) = init::<A>(&tx_results_events, &pg)?;

@@ -14,44 +14,44 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::ApiResult;
+use super::Aggregatrix;
 use failure::Fail;
 use log::error;
-use serde_json::Value;
 use std::collections::HashMap;
 use std::error::Error;
+use std::result::Result;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-pub enum TxEvent {
-    Store(i64, ApiResult<Value>),
+pub enum TxEvent<A: Aggregatrix> {
+    Store(i64, Result<A::Result, A::Error>),
     Retrieve(i64),
 }
 
-pub enum RxEvent {
-    Result(ApiResult<Value>),
+pub enum RxEvent<A: Aggregatrix> {
+    Result(Result<A::Result, A::Error>),
     NoValue,
 }
 
-pub type Tx = mpsc::Sender<TxEvent>;
-pub type Rx = mpsc::Receiver<RxEvent>;
-pub type TxError = mpsc::SendError<TxEvent>;
-pub type Channel = Arc<Mutex<(Tx, Rx)>>;
+pub type Tx<A> = mpsc::Sender<TxEvent<A>>;
+pub type Rx<A> = mpsc::Receiver<RxEvent<A>>;
+pub type TxError<A> = mpsc::SendError<TxEvent<A>>;
+pub type Channel<A> = Arc<Mutex<(Tx<A>, Rx<A>)>>;
 
 #[derive(Debug, Fail)]
 pub enum RetrieveError {
     #[fail(display = "Tx channel died: {:?}", _0)]
-    TxDead(TxError),
+    TxDead(String),
     #[fail(display = "Rx channel died: {:?}", _0)]
     RxDead(mpsc::RecvError),
     #[fail(display = "Couldn't acquire lock: {}", _0)]
     Lock(String),
 }
 
-impl From<TxError> for RetrieveError {
-    fn from(error: TxError) -> Self {
-        Self::TxDead(error)
+impl<A: Aggregatrix> From<TxError<A>> for RetrieveError {
+    fn from(error: TxError<A>) -> Self {
+        Self::TxDead(format!("{:?}", error))
     }
 }
 
@@ -61,7 +61,7 @@ impl From<mpsc::RecvError> for RetrieveError {
     }
 }
 
-pub fn retrieve(id: i64, channel: Channel) -> Result<RxEvent, RetrieveError> {
+pub fn retrieve<A: Aggregatrix>(id: i64, channel: Channel<A>) -> Result<RxEvent<A>, RetrieveError> {
     match channel.lock() {
         Ok(guard) => {
             let (tx, rx) = &*guard;
@@ -74,8 +74,8 @@ pub fn retrieve(id: i64, channel: Channel) -> Result<RxEvent, RetrieveError> {
     }
 }
 
-pub fn launch() -> (Tx, Rx) {
-    let mut results = HashMap::new();
+pub fn launch<A: Aggregatrix + 'static>() -> (Tx<A>, Rx<A>) {
+    let mut results = HashMap::<i64, Result<A::Result, A::Error>>::new();
     let (tx_server, rx_server) = mpsc::channel();
     let (tx_client, rx_client) = mpsc::channel();
 
