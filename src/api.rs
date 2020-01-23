@@ -14,13 +14,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::ApiResult;
 use failure::Fail;
-use serde::Serialize;
+use log::debug;
+use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::io::Read;
 use std::ops::Deref;
 use std::result;
+
+type Result<T> = result::Result<T, ApiError>;
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(tag = "status", rename_all = "kebab-case")]
+pub enum ApiResult<T> {
+    Ok { data: T },
+    Error { reason: String },
+}
+
+impl<T> From<ApiResult<T>> for Result<T> {
+    fn from(result: ApiResult<T>) -> Self {
+        match result {
+            ApiResult::Ok { data } => Ok(data),
+            ApiResult::Error { reason } => Err(ApiError(reason)),
+        }
+    }
+}
 
 #[derive(Debug, Fail)]
 #[fail(display = "API error encountered: {}", 0)]
@@ -46,26 +64,25 @@ impl From<std::io::Error> for ApiError {
     }
 }
 
-type Result<T> = result::Result<T, ApiError>;
-
 pub fn store(data: &[u8]) -> Result<String> {
-    let client = reqwest::Client::new();
+    let client = reqwest::blocking::Client::new();
 
-    Ok(client
+    client
         .put("http://localhost:8000/v1/store")
         .body(data.to_owned())
         .send()?
-        .text()?)
+        .json::<ApiResult<String>>()?
+        .into()
 }
 
 pub fn retrieve(id: &str) -> Result<Vec<u8>> {
-    let client = reqwest::Client::new();
+    let client = reqwest::blocking::Client::new();
     let mut data = Vec::<u8>::new();
 
     client
         .get(&format!("http://localhost:8000/v1/retrieve/{}", id))
         .send()?
-        .read(&mut data)?;
+        .read_to_end(&mut data)?;
 
     Ok(data)
 }
@@ -74,17 +91,12 @@ pub fn create<T>(event: T) -> Result<f64>
 where
     T: Serialize,
 {
-    let client = reqwest::Client::new();
+    let client = reqwest::blocking::Client::new();
 
-    let result = client
+    client
         .post("http://localhost:8000/v1/create")
         .json(&event)
         .send()?
-        .json::<ApiResult<f64>>()?;
-
-    match result {
-        ApiResult::Ok { data: Some(data) } => Ok(data),
-        ApiResult::Ok { data: None } => Err(ApiError("Empty reponse".to_string())),
-        ApiResult::Error { reason } => Err(ApiError(reason)),
-    }
+        .json::<ApiResult<f64>>()?
+        .into()
 }

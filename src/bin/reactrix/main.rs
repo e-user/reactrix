@@ -18,14 +18,14 @@
 
 mod mq;
 
-use base64;
 use diesel::prelude::*;
 use diesel::result::DatabaseErrorKind;
 use diesel::result::Error as DieselError;
 use dotenv::dotenv;
 use exitfailure::ExitFailure;
-use hex;
+use log::{error, warn};
 use mq::Tx;
+use reactrix::api::ApiResult;
 use reactrix::datastore::{DataStore, DataStoreError};
 use reactrix::{models, schema};
 use rocket::fairing;
@@ -51,13 +51,18 @@ struct StoreResponder(Status, JsonValue);
 impl StoreResponder {
     fn ok<T: Serialize>(status: Status, data: Option<&T>) -> Self {
         match data {
-            None => StoreResponder(status, json!({ "status": "ok" })),
-            Some(d) => StoreResponder(status, json!({ "status": "ok", "data": d })),
+            None => StoreResponder(status, json!(ApiResult::<Option<()>>::Ok { data: None })),
+            Some(d) => StoreResponder(status, json!(ApiResult::Ok { data: Some(d) })),
         }
     }
 
     fn error(status: Status, reason: &str) -> Self {
-        StoreResponder(status, json!({ "status": "error", "reason": reason }))
+        StoreResponder(
+            status,
+            json!(ApiResult::<()>::Error {
+                reason: reason.to_string()
+            }),
+        )
     }
 }
 
@@ -142,15 +147,6 @@ pub struct Encrypted<T> {
 #[database("events")]
 struct StoreDbConn(PgConnection);
 
-fn hex_decode(name: &str, data: &[u8]) -> Result<Vec<u8>, StoreResponder> {
-    hex::decode(data).or_else(|e| {
-        Err(StoreResponder::error(
-            Status::BadRequest,
-            &format!("Couldn't decode {}: {}", name, e),
-        ))
-    })
-}
-
 #[post("/v1/create", format = "application/json", data = "<event>")]
 fn create(
     conn: StoreDbConn,
@@ -182,6 +178,7 @@ fn create(
 fn store(conn: StoreDbConn, data: Vec<u8>) -> StoreResponder {
     let store = DataStore::new(&conn);
     match store.store(&data) {
+        // TODO existing data
         Ok(hash) => StoreResponder::ok(Status::Ok, Some(&hex::encode(hash))),
         Err(e) => StoreResponder::error(
             Status::InternalServerError,
@@ -191,17 +188,23 @@ fn store(conn: StoreDbConn, data: Vec<u8>) -> StoreResponder {
 }
 
 #[get("/v1/retrieve/<id>")]
-fn retrieve(conn: StoreDbConn, id: String) -> StoreResponder {
+fn retrieve(conn: StoreDbConn, id: String) -> Option<Vec<u8>> {
     let store = DataStore::new(&conn);
-    match store.retrieve(&hex_decode("id", id.as_bytes())?) {
-        Ok(data) => StoreResponder::ok(Status::Ok, Some(&base64::encode(&data))),
-        Err(DataStoreError::NoRecord) => {
-            StoreResponder::error(Status::NotFound, &format!("{}", DataStoreError::NoRecord))
+    let hash = match hex::decode(id.as_bytes()) {
+        Ok(hash) => hash,
+        Err(e) => {
+            warn!("Couldn't decode hash: {}", e);
+            return None;
         }
-        Err(e) => StoreResponder::error(
-            Status::InternalServerError,
-            &format!("Couldn't retrieve data: {}", e),
-        ),
+    };
+
+    match store.retrieve(&hash) {
+        Ok(data) => Some(data),
+        Err(DataStoreError::NoRecord) => None,
+        Err(e) => {
+            error!("Couldn't retrieve data hash {}: {}", id, e);
+            None
+        }
     }
 }
 

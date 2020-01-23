@@ -31,7 +31,7 @@ use diesel::result::Error as DieselError;
 use failure::Fail;
 use log::{error, info, warn};
 use results::{Channel, Tx, TxEvent};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::LinkedList;
 use std::env;
 use std::fmt::{Debug, Display};
@@ -116,13 +116,6 @@ pub trait Aggregatrix {
 pub struct Reactrix<A: Aggregatrix> {
     pub state: A::State,
     pub results: Channel<A>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(tag = "status", rename_all = "kebab-case")]
-pub enum ApiResult<T> {
-    Ok { data: Option<T> },
-    Error { reason: String },
 }
 
 fn process_event<A: Aggregatrix>(
