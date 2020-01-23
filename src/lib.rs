@@ -25,6 +25,7 @@ pub mod models;
 pub mod results;
 pub mod schema;
 
+use api::Api;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::result::Error as DieselError;
@@ -62,6 +63,8 @@ pub enum AggregatrixError {
     JsonConversion(String),
     #[fail(display = "Could not connect to ØMQ: {}", 0)]
     ZmqConnect(String),
+    #[fail(display = "Could not parse URL: {}", 0)]
+    UrlParse(url::ParseError),
 }
 
 impl From<ConnectionError> for AggregatrixError {
@@ -88,6 +91,12 @@ impl From<zmq::Error> for AggregatrixError {
     }
 }
 
+impl From<url::ParseError> for AggregatrixError {
+    fn from(error: url::ParseError) -> Self {
+        AggregatrixError::UrlParse(error)
+    }
+}
+
 pub type Result<T> = std::result::Result<T, AggregatrixError>;
 
 fn database_url() -> Result<String> {
@@ -96,6 +105,10 @@ fn database_url() -> Result<String> {
 
 fn zmq_url() -> Result<String> {
     env::var("ZMQ_URL").or_else(|_| Err(AggregatrixError::Var("ZMQ_URL".to_string())))
+}
+
+fn reactrix_url() -> Result<String> {
+    env::var("REACTRIX_URL").or_else(|_| Err(AggregatrixError::Var("REACTRIX_URL".to_string())))
 }
 
 fn zmq_client() -> Result<zmq::Socket> {
@@ -113,9 +126,11 @@ pub trait Aggregatrix {
     fn dispatch(state: &Self::State, event: &Event) -> result::Result<Self::Result, Self::Error>;
 }
 
+#[derive(Clone)]
 pub struct Reactrix<A: Aggregatrix> {
     pub state: A::State,
     pub results: Channel<A>,
+    pub api: Api,
 }
 
 fn process_event<A: Aggregatrix>(
@@ -211,6 +226,7 @@ fn zmq_queue(queue: Arc<(Mutex<LinkedList<i64>>, Condvar)>) -> Result<()> {
 }
 
 pub fn launch<A: 'static + Aggregatrix + Clone>() -> Result<Reactrix<A>> {
+    let api = Api::new(&reactrix_url()?)?;
     let pg = PgConnection::establish(&database_url()?)?;
 
     let queue = Arc::new((Mutex::new(LinkedList::<i64>::new()), Condvar::new()));
@@ -244,5 +260,6 @@ pub fn launch<A: 'static + Aggregatrix + Clone>() -> Result<Reactrix<A>> {
     Ok(Reactrix {
         state: server_state,
         results: Arc::new(Mutex::new((tx_results, rx_results))),
+        api,
     })
 }
