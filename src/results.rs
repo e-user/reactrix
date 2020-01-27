@@ -18,7 +18,6 @@ use super::Aggregatrix;
 use failure::Fail;
 use log::error;
 use std::collections::HashMap;
-use std::error::Error;
 use std::result::Result;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -70,7 +69,7 @@ pub fn retrieve<A: Aggregatrix>(id: i64, channel: Channel<A>) -> Result<RxEvent<
             Ok(rx.recv()?)
         }
 
-        Err(e) => Err(RetrieveError::Lock(e.description().to_string())),
+        Err(e) => Err(RetrieveError::Lock(e.to_string())),
     }
 }
 

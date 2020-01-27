@@ -39,7 +39,6 @@ use rocket_contrib::json;
 use rocket_contrib::json::{Json, JsonError, JsonValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::error::Error;
 use std::ops::Try;
 use std::result::Result;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -118,7 +117,7 @@ impl<'a> From<PoisonError<MutexGuard<'a, Tx>>> for StoreResponder {
     fn from(error: PoisonError<MutexGuard<'a, Tx>>) -> Self {
         StoreResponder::error(
             Status::InternalServerError,
-            &format!("Couldn't obtain lock: {}", error.description().to_string()),
+            &format!("Couldn't obtain lock: {}", error.to_string()),
         )
     }
 }

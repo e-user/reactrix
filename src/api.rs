@@ -70,9 +70,10 @@ pub struct Api(Url);
 impl Api {
     pub fn new(url: &str) -> result::Result<Self, ParseError> {
         let url = Url::parse(url)?;
-        match url.cannot_be_a_base() {
-            true => Err(ParseError::SetHostOnCannotBeABaseUrl),
-            false => Ok(Self(url)),
+        if url.cannot_be_a_base() {
+            Err(ParseError::SetHostOnCannotBeABaseUrl)
+        } else {
+            Ok(Self(url))
         }
     }
 
