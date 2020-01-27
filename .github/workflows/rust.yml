@@ -17,6 +17,11 @@ jobs:
         override: true
         components: clippy
 
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install libzmq-dev
+
     - name: Build
       run: cargo build --verbose
 
