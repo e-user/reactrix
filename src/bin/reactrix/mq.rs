@@ -34,7 +34,7 @@ fn poll(context: &Context) -> Result<mpsc::Sender<Publish>, failure::Error> {
 
     let socket = context.socket(zmq::PUB)?;
     socket.monitor("inproc://monitor", SocketEvent::ACCEPTED as i32)?;
-    socket.bind("tcp://*:5660")?;
+    socket.bind("tcp://*:5660")?; // TODO Configurable
     let mut id = 0;
 
     thread::spawn(move || {

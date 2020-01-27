@@ -208,6 +208,8 @@ fn retrieve(conn: StoreDbConn, id: String) -> Option<Vec<u8>> {
     }
 }
 
+// TODO config handler (ZMQ port etc)
+
 #[catch(404)]
 fn not_found() -> StoreResponder {
     StoreResponder::error(Status::NotFound, &"No such resource")
