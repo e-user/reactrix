@@ -177,7 +177,6 @@ fn create(
 fn store(conn: StoreDbConn, data: Vec<u8>) -> StoreResponder {
     let store = DataStore::new(&conn);
     match store.store(&data) {
-        // TODO existing data
         Ok(hash) => StoreResponder::ok(Status::Ok, Some(&hex::encode(hash))),
         Err(e) => StoreResponder::error(
             Status::InternalServerError,

@@ -27,6 +27,8 @@ pub enum DataStoreError {
     Database(DieselError),
     #[fail(display = "Record not found")]
     NoRecord,
+    #[fail(display = "Identical hash for different data detected: {}", 0)]
+    Collision(String),
 }
 
 impl From<DieselError> for DataStoreError {
@@ -44,6 +46,14 @@ impl<'a> DataStore<'a> {
 
     pub fn store(&self, data: &[u8]) -> Result<Vec<u8>, DataStoreError> {
         let hash = Blake2s::digest(data);
+
+        if let Ok(stored) = self.retrieve(&hash) {
+            if data == &stored[..] {
+                return Ok(hash.to_owned().to_vec());
+            } else {
+                return Err(DataStoreError::Collision(hex::encode(hash)));
+            }
+        }
 
         match diesel::insert_into(schema::datastore::table)
             .values(models::Data {
