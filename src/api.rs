@@ -14,8 +14,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::models::NewEvent;
 use failure::Fail;
 use log::debug;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::ops::Deref;
@@ -52,14 +54,11 @@ impl Deref for ApiError {
     }
 }
 
-impl From<reqwest::Error> for ApiError {
-    fn from(error: reqwest::Error) -> Self {
-        ApiError(error.to_string())
-    }
-}
-
-impl From<std::io::Error> for ApiError {
-    fn from(error: std::io::Error) -> Self {
+impl<T> From<T> for ApiError
+where
+    T: std::error::Error,
+{
+    fn from(error: T) -> Self {
         ApiError(error.to_string())
     }
 }
@@ -77,13 +76,13 @@ impl Api {
         }
     }
 
-    pub fn store(&self, data: &[u8]) -> Result<String> {
+    pub fn store<S: Serialize>(&self, data: &S) -> Result<String> {
         let client = reqwest::blocking::Client::new();
         let url = self.0.clone().join("v1/store").unwrap();
 
         debug!("store: {}", &url);
 
-        let response = client.put(url).body(data.to_owned()).send()?;
+        let response = client.put(url).body(serde_json::to_vec(data)?).send()?;
 
         if response.status().is_success() {
             response.json::<ApiResult<String>>()?.into()
@@ -92,7 +91,7 @@ impl Api {
         }
     }
 
-    pub fn retrieve(&self, id: &str) -> Result<Vec<u8>> {
+    pub fn retrieve<D: DeserializeOwned>(&self, id: &str) -> Result<D> {
         let client = reqwest::blocking::Client::new();
         let path = format!("v1/retrieve/{}", id);
         let url = self.0.clone().join(&path).unwrap();
@@ -104,16 +103,14 @@ impl Api {
 
         if response.status().is_success() {
             response.read_to_end(&mut data)?;
-            Ok(data)
+            let object = serde_json::from_slice(&data)?;
+            Ok(object)
         } else {
             Err(ApiError(response.status().to_string()))
         }
     }
 
-    pub fn create<T>(&self, event: T) -> Result<f64>
-    where
-        T: Serialize,
-    {
+    pub fn create(&self, event: NewEvent) -> Result<f64> {
         let client = reqwest::blocking::Client::new();
         let url = self.0.clone().join("v1/create").unwrap();
 

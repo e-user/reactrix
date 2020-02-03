@@ -17,7 +17,7 @@
 use crate::schema::*;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 #[derive(Queryable)]
 pub struct Event {
@@ -32,6 +32,15 @@ pub struct Event {
 pub struct NewEvent {
     pub version: i32,
     pub data: Value,
+}
+
+impl NewEvent {
+    pub fn create<T: Serialize>(version: i32, data: T) -> Self {
+        Self {
+            version,
+            data: json!(data),
+        }
+    }
 }
 
 #[derive(Queryable, Insertable)]
