@@ -16,7 +16,7 @@
 
 use super::models::NewEvent;
 use failure::Fail;
-use log::debug;
+use log::{debug, warn};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
@@ -122,6 +122,25 @@ impl Api {
             response.json::<ApiResult<f64>>()?.into()
         } else {
             Err(ApiError(response.status().to_string()))
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct StoredObject(String);
+
+impl StoredObject {
+    pub fn store<T: Serialize>(api: &Api, data: &T) -> Result<Self> {
+        Ok(Self(api.store(data)?))
+    }
+
+    pub fn retrieve<D: DeserializeOwned>(&self, api: &Api) -> Option<D> {
+        match api.retrieve(&self.0) {
+            Ok(data) => Some(data),
+            Err(e) => {
+                warn!("Couldn't retrieve {}: {}", self.0, e);
+                None
+            }
         }
     }
 }
