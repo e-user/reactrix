@@ -44,13 +44,6 @@ impl NewEvent {
 }
 
 #[derive(Queryable, Insertable)]
-#[table_name = "keystore"]
-pub struct Key {
-    pub hash: Vec<u8>,
-    pub key: Vec<u8>,
-}
-
-#[derive(Queryable, Insertable)]
 #[table_name = "datastore"]
 pub struct Data {
     pub hash: Vec<u8>,

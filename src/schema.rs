@@ -14,15 +14,4 @@ table! {
     }
 }
 
-table! {
-    keystore (hash) {
-        hash -> Bytea,
-        key -> Bytea,
-    }
-}
-
-allow_tables_to_appear_in_same_query!(
-    datastore,
-    events,
-    keystore,
-);
+allow_tables_to_appear_in_same_query!(datastore, events,);
