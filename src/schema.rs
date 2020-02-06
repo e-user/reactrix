@@ -14,4 +14,7 @@ table! {
     }
 }
 
-allow_tables_to_appear_in_same_query!(datastore, events,);
+allow_tables_to_appear_in_same_query!(
+    datastore,
+    events,
+);
