@@ -137,12 +137,6 @@ impl From<Event> for models::NewEvent {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct Encrypted<T> {
-    pub nonce: String,
-    pub data: T,
-}
-
 #[database("events")]
 struct StoreDbConn(PgConnection);
 
