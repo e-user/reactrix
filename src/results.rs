@@ -16,11 +16,12 @@
 
 use super::Aggregatrix;
 use failure::Fail;
-use log::error;
+use log::{debug, error};
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::result::Result;
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 
 pub enum TxEvent<A: Aggregatrix> {
@@ -36,7 +37,6 @@ pub enum RxEvent<A: Aggregatrix> {
 pub type Tx<A> = mpsc::Sender<TxEvent<A>>;
 pub type Rx<A> = mpsc::Receiver<RxEvent<A>>;
 pub type TxError<A> = mpsc::SendError<TxEvent<A>>;
-pub type Channel<A> = Arc<Mutex<(Tx<A>, Rx<A>)>>;
 
 #[derive(Debug, Fail)]
 pub enum RetrieveError {
@@ -60,29 +60,88 @@ impl From<mpsc::RecvError> for RetrieveError {
     }
 }
 
-pub fn retrieve<A: Aggregatrix>(id: i64, channel: Channel<A>) -> Result<RxEvent<A>, RetrieveError> {
-    match channel.lock() {
-        Ok(guard) => {
-            let (tx, rx) = &*guard;
-
-            tx.send(TxEvent::Retrieve(id))?;
-            Ok(rx.recv()?)
-        }
-
-        Err(e) => Err(RetrieveError::Lock(e.to_string())),
+impl<'a> From<PoisonError<MutexGuard<'a, i64>>> for RetrieveError {
+    fn from(error: PoisonError<MutexGuard<'a, i64>>) -> Self {
+        Self::Lock(error.to_string())
     }
 }
 
-pub fn launch<A: Aggregatrix + 'static>() -> (Tx<A>, Rx<A>) {
+#[derive(Clone)]
+pub struct Channel<A: Aggregatrix>(Arc<Mutex<(Tx<A>, Rx<A>)>>);
+
+impl<A: Aggregatrix> Deref for Channel<A> {
+    type Target = Arc<Mutex<(Tx<A>, Rx<A>)>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<A: Aggregatrix> Channel<A> {
+    pub fn new(tx: Tx<A>, rx: Rx<A>) -> Self {
+        Channel(Arc::new(Mutex::new((tx, rx))))
+    }
+}
+
+#[derive(Clone)]
+pub struct Results<A: Aggregatrix + 'static> {
+    pub channel: Channel<A>,
+    pub sequence: Arc<(Mutex<i64>, Condvar)>,
+}
+
+impl<A: Aggregatrix> Results<A> {
+    pub fn wait_for(&self, id: i64) -> Result<RxEvent<A>, RetrieveError> {
+        let (sequence, condvar) = &*self.sequence;
+        let mut sequence = sequence.lock()?;
+
+        debug!("Waiting for {}", id);
+
+        while *sequence < id {
+            sequence = condvar.wait(sequence)?;
+        }
+
+        self.retrieve(id)
+    }
+
+    pub fn retrieve(&self, id: i64) -> Result<RxEvent<A>, RetrieveError> {
+        match self.channel.lock() {
+            Ok(guard) => {
+                let (tx, rx) = &*guard;
+
+                tx.send(TxEvent::Retrieve(id))?;
+                Ok(rx.recv()?)
+            }
+
+            Err(e) => Err(RetrieveError::Lock(e.to_string())),
+        }
+    }
+}
+
+pub fn launch<A: Aggregatrix + 'static>() -> Results<A> {
+    let sequence = Arc::new((Mutex::new(-1), Condvar::new()));
+    let sequence_clone = sequence.clone();
     let mut results = HashMap::<i64, Result<A::Result, A::Error>>::new();
     let (tx_server, rx_server) = mpsc::channel();
     let (tx_client, rx_client) = mpsc::channel();
 
     thread::spawn(move || {
+        let (sequence, condvar) = &*sequence;
+
         for msg in rx_server {
             match msg {
                 TxEvent::Store(id, value) => {
+                    debug!("Storing {}", id);
                     results.insert(id, value);
+                    match sequence.lock() {
+                        Ok(mut sequence) => {
+                            debug!("Notifying {}", id);
+                            *sequence = id;
+                            condvar.notify_one();
+                        }
+                        Err(e) => {
+                            error!("Couldn't lock mutex: {}", e);
+                        }
+                    }
                 }
                 TxEvent::Retrieve(id) => match results.get(&id) {
                     Some(result) => {
@@ -102,5 +161,8 @@ pub fn launch<A: Aggregatrix + 'static>() -> (Tx<A>, Rx<A>) {
         }
     });
 
-    (tx_server, rx_client)
+    Results {
+        channel: Channel::new(tx_server, rx_client),
+        sequence: sequence_clone,
+    }
 }

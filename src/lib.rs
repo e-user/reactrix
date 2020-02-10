@@ -31,7 +31,7 @@ use diesel::prelude::*;
 use diesel::result::Error as DieselError;
 use failure::Fail;
 use log::{error, info, warn};
-use results::{Channel, Tx, TxEvent};
+use results::{Results, Tx, TxEvent};
 use serde::Serialize;
 use std::collections::LinkedList;
 use std::env;
@@ -127,9 +127,9 @@ pub trait Aggregatrix {
 }
 
 #[derive(Clone)]
-pub struct Reactrix<A: Aggregatrix> {
+pub struct Reactrix<A: Aggregatrix + 'static> {
     pub state: A::State,
-    pub results: Channel<A>,
+    pub results: Results<A>,
     pub api: Api,
 }
 
@@ -232,8 +232,8 @@ pub fn launch<A: 'static + Aggregatrix + Clone>() -> Result<Reactrix<A>> {
     let queue = Arc::new((Mutex::new(LinkedList::<i64>::new()), Condvar::new()));
     zmq_queue(queue.clone())?;
 
-    let (tx_results, rx_results) = results::launch::<A>();
-    let tx_results_events = tx_results.clone();
+    let results = results::launch::<A>();
+    let tx_results_events = results.channel.lock().unwrap().0.clone();
 
     let (state, mut sequence) = init::<A>(&tx_results_events, &pg)?;
     let server_state = state.clone();
@@ -259,7 +259,7 @@ pub fn launch<A: 'static + Aggregatrix + Clone>() -> Result<Reactrix<A>> {
 
     Ok(Reactrix {
         state: server_state,
-        results: Arc::new(Mutex::new((tx_results, rx_results))),
+        results,
         api,
     })
 }
