@@ -19,17 +19,18 @@
 #[macro_use]
 extern crate diesel;
 
-pub mod api;
+mod api;
 pub mod datastore;
 pub mod models;
 pub mod results;
 pub mod schema;
+pub mod server;
 
-use api::Api;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::result::Error as DieselError;
 use failure::Fail;
+use juniper::{GraphQLType, RootNode};
 use log::{error, info, warn};
 use results::{Results, Tx, TxEvent};
 use serde::Serialize;
@@ -39,9 +40,14 @@ use std::fmt::{Debug, Display};
 use std::result;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
+use warp::filters::BoxedFilter;
+use warp::Reply;
 
+pub use api::{Api, ApiError, StoredObject};
+pub use juniper;
 pub use models::{Event, NewEvent};
 pub use rmp_serde as rmp;
+pub use warp::serve;
 
 #[derive(Debug, Fail)]
 #[fail(display = "Out of Sequence: {}", 0)]
@@ -118,19 +124,18 @@ fn zmq_client() -> Result<zmq::Socket> {
     Ok(socket)
 }
 
-pub trait Aggregatrix {
+pub trait Aggregatrix: Sized {
     type State: Default + Clone + Send + Sync + 'static;
     type Error: Clone + Display + Serialize + Send + 'static;
     type Result: Clone + Send + 'static;
 
-    fn dispatch(state: &Self::State, event: &Event) -> result::Result<Self::Result, Self::Error>;
-}
+    type Context: Clone + Send + Sync + 'static;
+    type Query: GraphQLType<Context = Self::Context, TypeInfo = ()> + Send + Sync + 'static;
+    type Mutation: GraphQLType<Context = Self::Context, TypeInfo = ()> + Send + Sync + 'static;
 
-#[derive(Clone)]
-pub struct Reactrix<A: Aggregatrix + 'static> {
-    pub state: A::State,
-    pub results: Results<A>,
-    pub api: Api,
+    fn dispatch(state: &Self::State, event: &Event) -> result::Result<Self::Result, Self::Error>;
+    fn schema() -> RootNode<'static, Self::Query, Self::Mutation>;
+    fn context(state: Self::State, results: Results<Self>, api: Api) -> Self::Context;
 }
 
 fn process_event<A: Aggregatrix>(
@@ -225,7 +230,7 @@ fn zmq_queue(queue: Arc<(Mutex<LinkedList<i64>>, Condvar)>) -> Result<()> {
     Ok(())
 }
 
-pub fn launch<A: 'static + Aggregatrix + Clone>() -> Result<Reactrix<A>> {
+pub fn launch<A: 'static + Aggregatrix + Clone>() -> Result<BoxedFilter<(impl Reply,)>> {
     let api = Api::new(&reactrix_url()?)?;
     let pg = PgConnection::establish(&database_url()?)?;
 
@@ -236,7 +241,8 @@ pub fn launch<A: 'static + Aggregatrix + Clone>() -> Result<Reactrix<A>> {
     let tx_results_events = results.channel.lock().unwrap().0.clone();
 
     let (state, mut sequence) = init::<A>(&tx_results_events, &pg)?;
-    let server_state = state.clone();
+
+    let context = A::context(state.clone(), results, api);
 
     thread::spawn(move || {
         let (queue, condvar) = &*queue;
@@ -257,9 +263,5 @@ pub fn launch<A: 'static + Aggregatrix + Clone>() -> Result<Reactrix<A>> {
         }
     });
 
-    Ok(Reactrix {
-        state: server_state,
-        results,
-        api,
-    })
+    Ok(server::prepare::<A>(context))
 }
