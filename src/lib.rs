@@ -48,7 +48,7 @@ pub use datastore::{DataStore, DataStoreError};
 pub use juniper;
 pub use models::{Event, NewEvent};
 pub use rmp_serde as rmp;
-pub use warp::serve;
+pub use warp;
 
 #[derive(Debug, Fail)]
 #[fail(display = "Out of Sequence: {}", 0)]
@@ -136,7 +136,11 @@ pub trait Aggregatrix: Sized {
 
     fn dispatch(state: &Self::State, event: &Event) -> result::Result<Self::Result, Self::Error>;
     fn schema() -> RootNode<'static, Self::Query, Self::Mutation>;
-    fn context(state: Self::State, results: Results<Self>, api: Api) -> Self::Context;
+    fn context(
+        state: Self::State,
+        results: Results<Self>,
+        api: Api,
+    ) -> BoxedFilter<(Self::Context,)>;
 }
 
 fn process_event<A: Aggregatrix>(
@@ -242,8 +246,7 @@ pub fn launch<A: 'static + Aggregatrix + Clone>() -> Result<BoxedFilter<(impl Re
     let tx_results_events = results.channel.lock().unwrap().0.clone();
 
     let (state, mut sequence) = init::<A>(&tx_results_events, &pg)?;
-
-    let context = A::context(state.clone(), results, api);
+    let server_state = state.clone();
 
     thread::spawn(move || {
         let (queue, condvar) = &*queue;
@@ -264,5 +267,5 @@ pub fn launch<A: 'static + Aggregatrix + Clone>() -> Result<BoxedFilter<(impl Re
         }
     });
 
-    Ok(server::prepare::<A>(context))
+    Ok(server::prepare::<A>(server_state, results, api))
 }

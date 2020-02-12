@@ -14,16 +14,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::Aggregatrix;
+use super::{Aggregatrix, Api, Results};
 use warp::filters::BoxedFilter;
 use warp::{Filter, Reply};
 
-pub fn prepare<A: Aggregatrix>(context: A::Context) -> BoxedFilter<(impl Reply,)> {
+pub fn prepare<A: Aggregatrix>(
+    state: A::State,
+    results: Results<A>,
+    api: Api,
+) -> BoxedFilter<(impl Reply,)> {
     let schema = A::schema();
-    let state = warp::any().map(move || context.clone());
+    let context = A::context(state, results, api);
 
-    let graphql =
-        warp::path("graphql").and(juniper_warp::make_graphql_filter(schema, state.boxed()));
+    let graphql = warp::any()
+        .and(warp::path("graphql"))
+        .and(juniper_warp::make_graphql_filter(schema, context.boxed()));
 
     let graphiql = warp::get2()
         .and(warp::path::end())
@@ -32,6 +37,11 @@ pub fn prepare<A: Aggregatrix>(context: A::Context) -> BoxedFilter<(impl Reply,)
     graphql
         .or(graphiql)
         .with(warp::log("reactrix::server"))
-        .with(warp::cors().allow_any_origin())
+        .with(
+            warp::cors()
+                .allow_any_origin()
+                .allow_methods(vec!["GET", "POST"])
+                .allow_headers(vec!["authorization", "content-type"]),
+        )
         .boxed()
 }
