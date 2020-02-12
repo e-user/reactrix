@@ -24,11 +24,11 @@ pub fn prepare<A: Aggregatrix>(
     api: Api,
 ) -> BoxedFilter<(impl Reply,)> {
     let schema = A::schema();
-    let context = A::context(state, results, api);
+    let filter = A::filter(state, results, api);
 
     let graphql = warp::any()
         .and(warp::path("graphql"))
-        .and(juniper_warp::make_graphql_filter(schema, context.boxed()));
+        .and(juniper_warp::make_graphql_filter(schema, filter.boxed()));
 
     let graphiql = warp::get2()
         .and(warp::path::end())

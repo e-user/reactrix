@@ -84,7 +84,7 @@ impl<A: Aggregatrix> Channel<A> {
 }
 
 #[derive(Clone)]
-pub struct Results<A: Aggregatrix + 'static> {
+pub struct Results<A: Aggregatrix> {
     pub channel: Channel<A>,
     pub sequence: Arc<(Mutex<i64>, Condvar)>,
 }

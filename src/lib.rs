@@ -125,18 +125,18 @@ fn zmq_client() -> Result<zmq::Socket> {
     Ok(socket)
 }
 
-pub trait Aggregatrix: Sized {
-    type State: Default + Clone + Send + Sync + 'static;
-    type Error: Clone + Display + Serialize + Send + 'static;
-    type Result: Clone + Send + 'static;
+pub trait Aggregatrix: Sized + 'static {
+    type State: Default + Clone + Send + Sync;
+    type Error: Clone + Display + Serialize + Send;
+    type Result: Clone + Send;
 
-    type Context: Clone + Send + Sync + 'static;
-    type Query: GraphQLType<Context = Self::Context, TypeInfo = ()> + Send + Sync + 'static;
-    type Mutation: GraphQLType<Context = Self::Context, TypeInfo = ()> + Send + Sync + 'static;
+    type Context: Clone + Send + Sync;
+    type Query: GraphQLType<Context = Self::Context, TypeInfo = ()> + Send + Sync;
+    type Mutation: GraphQLType<Context = Self::Context, TypeInfo = ()> + Send + Sync;
 
     fn dispatch(state: &Self::State, event: &Event) -> result::Result<Self::Result, Self::Error>;
     fn schema() -> RootNode<'static, Self::Query, Self::Mutation>;
-    fn context(
+    fn filter(
         state: Self::State,
         results: Results<Self>,
         api: Api,
