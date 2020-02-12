@@ -20,7 +20,7 @@
 extern crate diesel;
 
 mod api;
-pub mod datastore;
+mod datastore;
 pub mod models;
 pub mod results;
 pub mod schema;
@@ -43,7 +43,8 @@ use std::thread;
 use warp::filters::BoxedFilter;
 use warp::Reply;
 
-pub use api::{Api, ApiError, StoredObject};
+pub use api::{Api, ApiError, ApiResult, StoredObject};
+pub use datastore::{DataStore, DataStoreError};
 pub use juniper;
 pub use models::{Event, NewEvent};
 pub use rmp_serde as rmp;

@@ -18,8 +18,8 @@ use super::{models, schema};
 use blake2::{Blake2s, Digest};
 use diesel::prelude::*;
 use diesel::result::Error as DieselError;
+use diesel::PgConnection;
 use failure::Fail;
-use rocket_contrib::databases::diesel::PgConnection;
 
 #[derive(Debug, Fail)]
 pub enum DataStoreError {
