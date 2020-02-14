@@ -20,13 +20,13 @@ use regex::Regex;
 use warp::filters::BoxedFilter;
 use warp::{Filter, Reply};
 
-pub trait GraphQLServer<A: Aggregatrix>: 'static {
+pub trait GraphQLServer: Aggregatrix + Sized {
     type Context: Send + Sync;
     type Query: GraphQLType<Context = Self::Context, TypeInfo = ()> + Send + Sync;
     type Mutation: GraphQLType<Context = Self::Context, TypeInfo = ()> + Send + Sync;
 
     fn schema() -> RootNode<'static, Self::Query, Self::Mutation>;
-    fn filter(state: AggregatrixState<A>) -> BoxedFilter<(Self::Context,)>;
+    fn filter(state: AggregatrixState<Self>) -> BoxedFilter<(Self::Context,)>;
 }
 
 pub fn token_filter() -> BoxedFilter<(Option<String>,)> {
@@ -44,9 +44,7 @@ pub fn token_filter() -> BoxedFilter<(Option<String>,)> {
         .boxed()
 }
 
-pub fn setup<A: Aggregatrix + GraphQLServer<A>>(
-    state: AggregatrixState<A>,
-) -> BoxedFilter<(impl Reply,)> {
+pub fn setup<A: GraphQLServer>(state: AggregatrixState<A>) -> BoxedFilter<(impl Reply,)> {
     let schema = A::schema();
     let filter = A::filter(state);
 

@@ -1,6 +1,6 @@
 // This file is part of reactrix.
 //
-// Copyright 2019 Alexander Dorn
+// Copyright 2019-2020 Alexander Dorn
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,13 +24,19 @@ use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 
+/// Results store incoming channel events
 pub enum TxEvent<A: Aggregatrix> {
+    /// Store a result
     Store(i64, Result<A::Result, A::Error>),
+    /// Retrieve a result
     Retrieve(i64),
 }
 
+/// Results store outgoing channel events
 pub enum RxEvent<A: Aggregatrix> {
+    /// Existing value
     Result(Result<A::Result, A::Error>),
+    /// Missing value
     NoValue,
 }
 
@@ -83,6 +89,11 @@ impl<A: Aggregatrix> Channel<A> {
     }
 }
 
+/// Event processing results channel
+///
+/// Used to obtain the evaluation results from the respective `Aggregatrix`
+/// implementation. `Results` is distinct from `State`, which is modified
+/// without referential transparence.
 #[derive(Clone)]
 pub struct Results<A: Aggregatrix> {
     pub channel: Channel<A>,
@@ -90,6 +101,7 @@ pub struct Results<A: Aggregatrix> {
 }
 
 impl<A: Aggregatrix> Results<A> {
+    /// Retrieve result `id`, waiting indefinitely if it is not available, yet
     pub fn wait_for(&self, id: i64) -> Result<RxEvent<A>, RetrieveError> {
         let (sequence, condvar) = &*self.sequence;
         let mut sequence = sequence.lock()?;
@@ -103,6 +115,7 @@ impl<A: Aggregatrix> Results<A> {
         self.retrieve(id)
     }
 
+    /// Retrieve result `id`
     pub fn retrieve(&self, id: i64) -> Result<RxEvent<A>, RetrieveError> {
         match self.channel.lock() {
             Ok(guard) => {

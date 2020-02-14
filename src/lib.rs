@@ -14,97 +14,45 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![feature(proc_macro_hygiene, decl_macro)]
+//! # reactrix
+//!
+//! reactrix is an event sourcing framework with built-in mechanisms for GDPR
+//! compliance.
 
 #[macro_use]
 extern crate diesel;
 
+#[macro_use]
+extern crate lazy_static;
+
 mod api;
-mod datastore;
-pub mod models;
-pub mod results;
+mod error;
+pub mod graphql;
+mod model;
+mod results;
 pub mod schema;
-pub mod server;
 
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
-use diesel::result::Error as DieselError;
-use failure::Fail;
-use juniper::{GraphQLType, RootNode};
 use log::{error, info, warn};
-use results::{Results, Tx, TxEvent};
+use results::Tx;
 use serde::Serialize;
 use std::collections::LinkedList;
 use std::env;
-use std::fmt::{Debug, Display};
+use std::fmt::Display;
 use std::result;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use warp::filters::BoxedFilter;
-use warp::Reply;
 
 pub use api::{Api, ApiError, ApiResult, StoredObject};
-pub use datastore::{DataStore, DataStoreError};
+pub use error::AggregatrixError;
 pub use juniper;
-pub use models::{Event, NewEvent};
+pub use model::{Data, Event, NewEvent};
+pub use results::{Results, RxEvent, TxEvent};
 pub use rmp_serde as rmp;
 pub use warp;
 
-#[derive(Debug, Fail)]
-#[fail(display = "Out of Sequence: {}", 0)]
-pub struct OutOfSequenceError(i64);
-
-#[derive(Debug, Fail)]
-pub enum AggregatrixError {
-    #[fail(display = "Environment variable {} is missing", 0)]
-    Var(String),
-    #[fail(display = "Database connection failed: {}", 0)]
-    Connection(ConnectionError),
-    #[fail(display = "Database error: {}", 0)]
-    Database(DieselError),
-    #[fail(display = "Event out of sequence: {}", 0)]
-    OutOfSequence(OutOfSequenceError),
-    #[fail(display = "Tx error: {}", 0)]
-    ResultProcessing(String),
-    #[fail(display = "Could not convert JSON: {}", 0)]
-    JsonConversion(String),
-    #[fail(display = "Could not connect to ØMQ: {}", 0)]
-    ZmqConnect(String),
-    #[fail(display = "Could not parse URL: {}", 0)]
-    UrlParse(url::ParseError),
-}
-
-impl From<ConnectionError> for AggregatrixError {
-    fn from(error: ConnectionError) -> Self {
-        AggregatrixError::Connection(error)
-    }
-}
-
-impl From<DieselError> for AggregatrixError {
-    fn from(error: DieselError) -> Self {
-        AggregatrixError::Database(error)
-    }
-}
-
-impl From<serde_json::Error> for AggregatrixError {
-    fn from(error: serde_json::Error) -> Self {
-        AggregatrixError::JsonConversion(format!("{}", error))
-    }
-}
-
-impl From<zmq::Error> for AggregatrixError {
-    fn from(error: zmq::Error) -> Self {
-        AggregatrixError::ZmqConnect(format!("{}", error))
-    }
-}
-
-impl From<url::ParseError> for AggregatrixError {
-    fn from(error: url::ParseError) -> Self {
-        AggregatrixError::UrlParse(error)
-    }
-}
-
-pub type Result<T> = std::result::Result<T, AggregatrixError>;
+type Result<T> = std::result::Result<T, AggregatrixError>;
 
 fn database_url() -> Result<String> {
     env::var("DATABASE_URL").or_else(|_| Err(AggregatrixError::Var("DATABASE_URL".to_string())))
@@ -118,6 +66,7 @@ fn reactrix_url() -> Result<String> {
     env::var("REACTRIX_URL").or_else(|_| Err(AggregatrixError::Var("REACTRIX_URL".to_string())))
 }
 
+/// Create a ØMQ socket in subscriber mode
 fn zmq_client() -> Result<zmq::Socket> {
     let context = zmq::Context::new();
     let socket = context.socket(zmq::SUB)?;
@@ -125,24 +74,42 @@ fn zmq_client() -> Result<zmq::Socket> {
     Ok(socket)
 }
 
-pub trait Aggregatrix: Sized + 'static {
+/// Central type to implement for materialized view implementations
+///
+/// `State`: Corresponds to the actual database in a classic, non event sourced
+/// application. A reference is passed to `dispatch` for each new event to be
+/// processed. Must be wrapped for thread-safety,
+/// e.g. `Arc<RwLock<InnerState>>`.
+///
+/// `Result` and `Error`: Instances of these types get stored as `dispatch`
+/// invocation results and can be obtained through the `Results` channel.
+///
+/// `dispatch`: Gets invoked for each incoming `Event` and should modify `State`
+/// accordingly.
+pub trait Aggregatrix: 'static {
     type State: Default + Clone + Send + Sync;
-    type Error: Clone + Display + Serialize + Send;
     type Result: Clone + Send;
-
-    type Context: Clone + Send + Sync;
-    type Query: GraphQLType<Context = Self::Context, TypeInfo = ()> + Send + Sync;
-    type Mutation: GraphQLType<Context = Self::Context, TypeInfo = ()> + Send + Sync;
+    type Error: Clone + Display + Serialize + Send;
 
     fn dispatch(state: &Self::State, event: &Event) -> result::Result<Self::Result, Self::Error>;
-    fn schema() -> RootNode<'static, Self::Query, Self::Mutation>;
-    fn filter(
-        state: Self::State,
-        results: Results<Self>,
-        api: Api,
-    ) -> BoxedFilter<(Self::Context,)>;
 }
 
+/// Simple compound struct returned by `launch`
+///
+/// It can be used both for custom implementations for the materialized view
+/// server, or passed down to a provided implementation, currently only
+/// `graphql::setup`.
+#[derive(Clone)]
+pub struct AggregatrixState<A: Aggregatrix> {
+    pub state: A::State,
+    pub results: Results<A>,
+    pub api: Api,
+}
+
+/// Process a single event from the event store
+///
+/// The event itself is dispatched to the concrete `Aggregatrix` implementation
+/// and the evaluation result stored in the `Results` store.
 fn process_event<A: Aggregatrix>(
     sequence: i64,
     state: &A::State,
@@ -174,6 +141,7 @@ fn process_event<A: Aggregatrix>(
     Ok(())
 }
 
+/// Initialize `Aggregatrix` state from the current state of the event store
 fn init<A: Aggregatrix>(tx: &Tx<A>, pg: &PgConnection) -> Result<(A::State, i64)> {
     use schema::events::dsl::*;
 
@@ -191,6 +159,10 @@ fn init<A: Aggregatrix>(tx: &Tx<A>, pg: &PgConnection) -> Result<(A::State, i64)
     Ok((state, *ids.last().unwrap_or(&0)))
 }
 
+/// Start the ØMQ event queue
+///
+/// Iterates over events coming from the `sequence` channel and pushes them into
+/// the provided queue. Notifies the receiving end through the `Condvar`.
 fn zmq_queue(queue: Arc<(Mutex<LinkedList<i64>>, Condvar)>) -> Result<()> {
     let socket = zmq_client()?;
     socket.set_subscribe(b"sequence")?;
@@ -235,7 +207,12 @@ fn zmq_queue(queue: Arc<(Mutex<LinkedList<i64>>, Condvar)>) -> Result<()> {
     Ok(())
 }
 
-pub fn launch<A: 'static + Aggregatrix + Clone>() -> Result<BoxedFilter<(impl Reply,)>> {
+/// Start all reactrix subsystems and return initial state
+///
+/// The subsystems include a ØMQ queue talking to the event store, a
+/// complementary queue consumer thread which triggers event processing and the
+/// `Results` channel server.
+pub fn launch<A: Aggregatrix>() -> Result<AggregatrixState<A>> {
     let api = Api::new(&reactrix_url()?)?;
     let pg = PgConnection::establish(&database_url()?)?;
 
@@ -267,5 +244,9 @@ pub fn launch<A: 'static + Aggregatrix + Clone>() -> Result<BoxedFilter<(impl Re
         }
     });
 
-    Ok(server::prepare::<A>(server_state, results, api))
+    Ok(AggregatrixState {
+        state: server_state,
+        results,
+        api,
+    })
 }

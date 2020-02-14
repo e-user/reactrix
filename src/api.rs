@@ -42,6 +42,7 @@ impl<T> From<ApiResult<T>> for Result<T> {
     }
 }
 
+/// `Api` error wrapper
 #[derive(Debug, Fail)]
 #[fail(display = "API error encountered: {}", 0)]
 pub struct ApiError(String);
@@ -63,10 +64,15 @@ where
     }
 }
 
+/// reactrix-store API wrapper
+///
+/// `Api` provides blocking convenience functions to interact with
+/// `reactrix-store`'s REST API.
 #[derive(Clone)]
 pub struct Api(Url);
 
 impl Api {
+    /// Initialize new `Api` instance
     pub fn new(url: &str) -> result::Result<Self, ParseError> {
         let url = Url::parse(url)?;
         if url.cannot_be_a_base() {
@@ -76,6 +82,26 @@ impl Api {
         }
     }
 
+    /// Add an event to the event store
+    pub fn create(&self, event: NewEvent) -> Result<f64> {
+        let client = reqwest::blocking::Client::new();
+        let url = self.0.clone().join("v1/create").unwrap();
+
+        debug!("create: {}", &url);
+
+        let response = client.post(url).json(&event).send()?;
+
+        if response.status().is_success() {
+            response.json::<ApiResult<f64>>()?.into()
+        } else {
+            Err(ApiError(response.status().to_string()))
+        }
+    }
+
+    /// Add an object to the object store
+    ///
+    /// The returned success string is an encoded hash of the serialized `data`
+    /// and can be used to retrieve the object back using `retrieve`.
     pub fn store<S: Serialize>(&self, data: &S) -> Result<String> {
         let client = reqwest::blocking::Client::new();
         let url = self.0.clone().join("v1/store").unwrap();
@@ -91,6 +117,10 @@ impl Api {
         }
     }
 
+    /// Retrieve an object from the object store
+    ///
+    /// `id` corresponds to an encoded hash exactly as it was previously
+    /// returned by `store`.
     pub fn retrieve<D: DeserializeOwned>(&self, id: &str) -> Result<D> {
         let client = reqwest::blocking::Client::new();
         let path = format!("v1/retrieve/{}", id);
@@ -109,31 +139,19 @@ impl Api {
             Err(ApiError(response.status().to_string()))
         }
     }
-
-    pub fn create(&self, event: NewEvent) -> Result<f64> {
-        let client = reqwest::blocking::Client::new();
-        let url = self.0.clone().join("v1/create").unwrap();
-
-        debug!("create: {}", &url);
-
-        let response = client.post(url).json(&event).send()?;
-
-        if response.status().is_success() {
-            response.json::<ApiResult<f64>>()?.into()
-        } else {
-            Err(ApiError(response.status().to_string()))
-        }
-    }
 }
 
+/// Object store convenience wrapper
 #[derive(Clone, Serialize, Deserialize)]
 pub struct StoredObject(String);
 
 impl StoredObject {
-    pub fn store<T: Serialize>(api: &Api, data: &T) -> Result<Self> {
+    /// Store an object in the object store using `api`
+    pub fn store<S: Serialize>(api: &Api, data: &S) -> Result<Self> {
         Ok(Self(api.store(data)?))
     }
 
+    /// Retrieve the original object back from the object store
     pub fn retrieve<D: DeserializeOwned>(&self, api: &Api) -> Option<D> {
         match api.retrieve(&self.0) {
             Ok(data) => Some(data),

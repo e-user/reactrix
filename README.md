@@ -1,8 +1,8 @@
-# Reactrix GDPR-Compliant Event Sourcing Framework
+# reactrix
 
 [![License](https://img.shields.io/crates/l/reactrix)](https://www.apache.org/licenses/LICENSE-2.0)
 
-Reactrix is an opinionated [Event Sourcing] framework with a supplementary
+reactrix is an opinionated [Event Sourcing] framework with a supplementary
 [Event Store] written in [Rust]. It solves the conundrum of guaranteed integrity
 of events versus [the right to be forgotten], as required by the European [GDPR].
 

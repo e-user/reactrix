@@ -19,6 +19,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::{json, Value};
 
+/// Event store entry (query)
 #[derive(Queryable)]
 pub struct Event {
     pub sequence: i64,
@@ -27,6 +28,7 @@ pub struct Event {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Event store entry (insert)
 #[derive(Insertable, Serialize)]
 #[table_name = "events"]
 pub struct NewEvent {
@@ -43,6 +45,7 @@ impl NewEvent {
     }
 }
 
+#[doc(hidden)]
 #[derive(Queryable, Insertable)]
 #[table_name = "datastore"]
 pub struct Data {
