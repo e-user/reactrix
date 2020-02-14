@@ -14,17 +14,41 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{Aggregatrix, Api, Results};
+use super::{Aggregatrix, AggregatrixState};
+use juniper::{GraphQLType, RootNode};
+use regex::Regex;
 use warp::filters::BoxedFilter;
 use warp::{Filter, Reply};
 
-pub fn prepare<A: Aggregatrix>(
-    state: A::State,
-    results: Results<A>,
-    api: Api,
+pub trait GraphQLServer<A: Aggregatrix>: 'static {
+    type Context: Send + Sync;
+    type Query: GraphQLType<Context = Self::Context, TypeInfo = ()> + Send + Sync;
+    type Mutation: GraphQLType<Context = Self::Context, TypeInfo = ()> + Send + Sync;
+
+    fn schema() -> RootNode<'static, Self::Query, Self::Mutation>;
+    fn filter(state: AggregatrixState<A>) -> BoxedFilter<(Self::Context,)>;
+}
+
+pub fn token_filter() -> BoxedFilter<(Option<String>,)> {
+    warp::header::<String>("authorization")
+        .map(|header: String| {
+            lazy_static! {
+                static ref RE: Regex = Regex::new(r"^Bearer ([[:alnum:]-._~+/]+=*)$").unwrap();
+            }
+
+            RE.captures(&header)
+                .map(|caps| caps.get(1).unwrap().as_str().to_string())
+        })
+        .or(warp::any().map(|| None))
+        .unify()
+        .boxed()
+}
+
+pub fn setup<A: Aggregatrix + GraphQLServer<A>>(
+    state: AggregatrixState<A>,
 ) -> BoxedFilter<(impl Reply,)> {
     let schema = A::schema();
-    let filter = A::filter(state, results, api);
+    let filter = A::filter(state);
 
     let graphql = warp::any()
         .and(warp::path("graphql"))
