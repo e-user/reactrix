@@ -14,7 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::models::NewEvent;
+use super::model::NewEvent;
 use failure::Fail;
 use log::{debug, warn};
 use serde::de::DeserializeOwned;

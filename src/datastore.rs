@@ -14,7 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{models, schema};
+use super::{model, schema};
 use blake2::{Blake2s, Digest};
 use diesel::prelude::*;
 use diesel::result::Error as DieselError;
@@ -56,11 +56,11 @@ impl<'a> DataStore<'a> {
         }
 
         match diesel::insert_into(schema::datastore::table)
-            .values(models::Data {
+            .values(model::Data {
                 hash: hash.to_vec(),
                 data: data.to_vec(),
             })
-            .get_result::<models::Data>(self.0)
+            .get_result::<model::Data>(self.0)
         {
             Ok(data) => Ok(data.hash),
             Err(e) => Err(e.into()),
