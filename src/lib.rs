@@ -19,6 +19,8 @@
 //! reactrix is an event sourcing framework with built-in mechanisms for GDPR
 //! compliance.
 
+#![allow(clippy::single_component_path_imports)]
+
 #[macro_use]
 extern crate diesel;
 
