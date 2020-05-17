@@ -16,11 +16,8 @@
 
 use crate::schema::*;
 use chrono::{DateTime, Utc};
-use serde::de::Visitor;
-use serde::ser::SerializeStruct;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::fmt;
 
 /// Event store entry (query)
 #[derive(Queryable, Serialize, Deserialize)]
