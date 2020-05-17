@@ -16,7 +16,8 @@
 
 use crate::schema::*;
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{json, Value};
 
 /// Event store entry (query)
@@ -28,8 +29,22 @@ pub struct Event {
     pub timestamp: DateTime<Utc>,
 }
 
+impl Serialize for Event {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut event = serializer.serialize_struct("Event", 4)?;
+        event.serialize_field("sequence", &self.sequence)?;
+        event.serialize_field("version", &self.version)?;
+        event.serialize_field("data", &self.data)?;
+        event.serialize_field("timestamp", &self.timestamp.timestamp())?;
+        event.end()
+    }
+}
+
 /// Event store entry (insert)
-#[derive(Insertable, Serialize)]
+#[derive(Insertable, Serialize, Deserialize)]
 #[table_name = "events"]
 pub struct NewEvent {
     pub version: i32,
