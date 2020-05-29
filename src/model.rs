@@ -24,6 +24,8 @@ use serde_json::{json, Value};
 pub struct Event {
     pub sequence: i64,
     pub version: i32,
+    #[serde(rename = "type")]
+    pub type_: String,
     pub data: Value,
     pub timestamp: DateTime<Utc>,
 }
@@ -32,14 +34,17 @@ pub struct Event {
 #[derive(Insertable, Serialize, Deserialize)]
 #[table_name = "events"]
 pub struct NewEvent {
+    #[serde(rename = "type")]
+    pub type_: String,
     pub version: i32,
     pub data: Value,
 }
 
 impl NewEvent {
-    pub fn create<T: Serialize>(version: i32, data: T) -> Self {
+    pub fn create<T: Serialize>(version: i32, r#type: String, data: T) -> Self {
         Self {
             version,
+            type_: r#type,
             data: json!(data),
         }
     }
